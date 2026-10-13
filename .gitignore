@@ -1,0 +1,9 @@
+/target/
+/target-win/
+/vendor/*
+!/vendor/.gitkeep
+/dist/
+/licenses/RUST-DEPENDENCY-LICENSES.txt
+*.log
+.DS_Store
+

@@ -1,0 +1,73 @@
+name: Build and test
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt
+      - name: Verify and test
+        shell: pwsh
+        run: |
+          cargo +1.99.0 fmt --check
+          cargo +1.99.0 test --all-targets --locked
+      - name: Fetch verified runtime
+        run: python scripts/fetch_runtime.py --platform windows
+      - name: Compile static CRT executable
+        shell: pwsh
+        env:
+          QUOTA_BUNDLE_RUNTIME: '1'
+        run: |
+          cargo +1.99.0 build --release --locked --target x86_64-pc-windows-msvc
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/QuotaMonitori.exe dist/
+          Copy-Item README.md, LICENSE, THIRD-PARTY-NOTICES.md dist/
+          python scripts/collect_licenses.py
+          Copy-Item -Recurse licenses, docs dist/
+          Copy-Item assets/FONT-LICENSE.txt dist/licenses/
+          (Get-FileHash dist/QuotaMonitori.exe -Algorithm SHA256).Hash | Out-File dist/SHA256.txt
+      - name: Verify bundled Windows runtime
+        shell: pwsh
+        run: |
+          $report = Join-Path $pwd 'dist/self-test.json'
+          $p = Start-Process -FilePath 'dist/QuotaMonitori.exe' -ArgumentList @('--self-test', $report) -PassThru
+          if (-not $p.WaitForExit(60000)) { $p.Kill(); throw 'Runtime self-test timed out' }
+          if ($p.ExitCode -ne 0) { Get-Content $report -ErrorAction SilentlyContinue; throw 'Runtime self-test failed' }
+          Get-Content $report
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QuotaMonitori-windows-x64-static
+          path: dist/
+          compression-level: 0
+          retention-days: 30
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libayatana-appindicator3-dev libxdo-dev libxkbcommon-dev libssl-dev
+      - name: Install Rust
+        run: rustup toolchain install 1.99.0 --profile minimal
+      - name: Test
+        run: cargo +1.99.0 test --all-targets --locked
+      - name: Fetch verified runtime
+        run: python3 scripts/fetch_runtime.py --platform linux
+      - name: Build
+        env:
+          QUOTA_BUNDLE_RUNTIME: '1'
+        run: cargo +1.99.0 build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: QuotaMonitori-linux-x64
+          path: target/release/QuotaMonitori
+          compression-level: 0
+          retention-days: 30
+

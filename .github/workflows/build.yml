@@ -33,6 +33,7 @@ jobs:
           python scripts/collect_licenses.py
           Copy-Item -Recurse licenses, docs dist/
           Copy-Item assets/FONT-LICENSE.txt dist/licenses/
+          Copy-Item scripts/Demo.bat dist/
           (Get-FileHash dist/QuotaMonitori.exe -Algorithm SHA256).Hash | Out-File dist/SHA256.txt
       - name: Verify bundled Windows runtime
         shell: pwsh

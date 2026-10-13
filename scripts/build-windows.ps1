@@ -12,5 +12,6 @@ if ($LASTEXITCODE -ne 0) { throw 'License collection failed' }
 Copy-Item README.md, LICENSE, THIRD-PARTY-NOTICES.md dist/
 Copy-Item -Recurse -Force licenses, docs dist/
 Copy-Item assets/FONT-LICENSE.txt dist/licenses/
+Copy-Item scripts/Demo.bat dist/
 Get-FileHash dist/QuotaMonitori.exe -Algorithm SHA256
 

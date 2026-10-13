@@ -1023,12 +1023,15 @@ impl eframe::App for App {
                     Color32::from_rgb(61, 75, 75)
                 },
             ));
-        let mut content_height = 220.0;
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
             let background = ui.interact(ui.max_rect(), ui.id().with("context"), Sense::click());
             self.header(ui, ctx);
             match self.page.clone() {
-                Page::Monitor => self.monitor(ui, ctx),
+                Page::Monitor => {
+                    egui::ScrollArea::vertical()
+                        .max_height(620.0)
+                        .show(ui, |ui| self.monitor(ui, ctx));
+                }
                 Page::Settings => {
                     egui::ScrollArea::vertical()
                         .max_height(620.0)
@@ -1045,7 +1048,6 @@ impl eframe::App for App {
                         .show(ui, |ui| self.detail(ui, &id));
                 }
             }
-            content_height = ui.min_rect().height() + 26.0;
             background.context_menu(|ui| {
                 if ui.button("设置").clicked() {
                     self.page = Page::Settings;
@@ -1072,7 +1074,16 @@ impl eframe::App for App {
         } else {
             470.0
         };
-        let size = Vec2::new(width, content_height.clamp(140.0, 740.0));
+        let count = self.settings.accounts.iter().filter(|a| a.visible).count();
+        let height = match self.page {
+            Page::Settings => 680.0,
+            Page::Accounts => 460.0,
+            Page::Detail(_) => 700.0,
+            Page::Monitor if count == 0 => 230.0,
+            Page::Monitor if self.settings.view == "ring" => (count.div_ceil(3) * 150 + 116) as f32,
+            Page::Monitor => (count * 80 + 116) as f32,
+        };
+        let size = Vec2::new(width, height.clamp(140.0, 700.0));
         if (size - self.last_size).length() > 1.0 {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
             self.last_size = size;

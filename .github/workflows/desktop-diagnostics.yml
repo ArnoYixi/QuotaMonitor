@@ -1,0 +1,45 @@
+name: Diagnose Windows desktop
+on:
+  push:
+    branches: [diagnostics/windows-ui]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  desktop:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: QuotaMonitori-windows-x64-static
+          run-id: 38440462544
+          github-token: ${{ github.token }}
+          path: probe
+      - shell: pwsh
+        run: |
+          Add-Type @'
+          using System;
+          using System.Text;
+          using System.Runtime.InteropServices;
+          public static class InspectWindow {
+            public delegate bool Callback(IntPtr hwnd, IntPtr p);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h, Callback cb, IntPtr p);
+            public static string Describe(IntPtr h) {
+              var s=new StringBuilder(4096); GetClassName(h,s,4096);
+              var output=new StringBuilder("Class: "+s.ToString()+"\n");
+              EnumChildWindows(h,(child,p)=> { var t=new StringBuilder(4096); GetWindowText(child,t,4096); output.AppendLine(t.ToString()); return true; },IntPtr.Zero);
+              return output.ToString();
+            }
+          }
+          '@
+          $p = Start-Process 'probe/QuotaMonitori.exe' -ArgumentList '--demo' -PassThru
+          try {
+            Start-Sleep -Seconds 4
+            $p.Refresh()
+            Write-Host "Title: $($p.MainWindowTitle)"
+            Write-Host ([InspectWindow]::Describe($p.MainWindowHandle))
+          } finally {
+            if (-not $p.HasExited) { Stop-Process $p.Id -Force }
+          }

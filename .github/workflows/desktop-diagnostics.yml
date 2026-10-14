@@ -1,4 +1,4 @@
-name: Diagnose Windows desktop
+name: Verify Windows floating interface
 on:
   push:
     branches: [diagnostics/windows-ui]
@@ -9,37 +9,31 @@ jobs:
   desktop:
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v4
+      - name: Wait for compiled executable
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for ($i=0; $i -lt 36; $i++) {
+            $r = Invoke-RestMethod -Headers @{Authorization="Bearer $env:GH_TOKEN"} -Uri 'https://api.github.com/repos/ArnoYixi/QuotaMonitori/actions/runs/38499707963/artifacts'
+            if ($r.artifacts | Where-Object { $_.name -eq 'QuotaMonitori-windows-x64-static' }) { exit 0 }
+            Start-Sleep -Seconds 10
+          }
+          throw 'Compiled artifact unavailable'
       - uses: actions/download-artifact@v4
         with:
           name: QuotaMonitori-windows-x64-static
-          run-id: 38440462544
+          run-id: 38499707963
           github-token: ${{ github.token }}
-          path: probe
+          path: dist
       - shell: pwsh
-        run: |
-          Add-Type @'
-          using System;
-          using System.Text;
-          using System.Runtime.InteropServices;
-          public static class InspectWindow {
-            public delegate bool Callback(IntPtr hwnd, IntPtr p);
-            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
-            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-            [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h, Callback cb, IntPtr p);
-            public static string Describe(IntPtr h) {
-              var s=new StringBuilder(4096); GetClassName(h,s,4096);
-              var output=new StringBuilder("Class: "+s.ToString()+"\n");
-              EnumChildWindows(h,(child,p)=> { var t=new StringBuilder(4096); GetWindowText(child,t,4096); output.AppendLine(t.ToString()); return true; },IntPtr.Zero);
-              return output.ToString();
-            }
-          }
-          '@
-          $p = Start-Process 'probe/QuotaMonitori.exe' -ArgumentList '--demo' -PassThru
-          try {
-            Start-Sleep -Seconds 4
-            $p.Refresh()
-            Write-Host "Title: $($p.MainWindowTitle)"
-            Write-Host ([InspectWindow]::Describe($p.MainWindowHandle))
-          } finally {
-            if (-not $p.HasExited) { Stop-Process $p.Id -Force }
-          }
+        run: ./scripts/prepare-ui-test.ps1
+      - shell: pwsh
+        run: ./scripts/test-window.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Verified-QuotaMonitori-windows-x64-static
+          path: dist/
+          compression-level: 0

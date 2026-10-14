@@ -195,6 +195,56 @@ fn wake_window() {
     }
 }
 
+pub fn prepare_overlay() {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::*;
+        let hwnd = main_window();
+        if hwnd.is_null() {
+            return;
+        }
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let wanted = (style | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize);
+        if style != wanted {
+            let visible = IsWindowVisible(hwnd) != 0;
+            if visible {
+                ShowWindow(hwnd, SW_HIDE);
+            }
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted);
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
+            );
+            if visible {
+                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            }
+        }
+    }
+}
+
+pub fn start_drag(ctx: &egui::Context) {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::ReleaseCapture, WindowsAndMessaging::*,
+        };
+        let hwnd = main_window();
+        if !hwnd.is_null() {
+            ReleaseCapture();
+            // Queue after egui releases its frame lock; never enter the native
+            // modal move loop synchronously inside App::update.
+            PostMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+            return;
+        }
+    }
+    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+}
+
 pub fn desktop_geometry(ctx: &egui::Context) -> Option<DesktopGeometry> {
     #[cfg(windows)]
     unsafe {

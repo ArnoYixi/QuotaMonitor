@@ -385,11 +385,14 @@ impl App {
         }
         // Start on the press frame: waiting for the drag threshold is too late on Windows.
         if !self.settings.lock_position
-            && r.is_pointer_button_down_on()
+            && (r.is_pointer_button_down_on()
+                || (account.is_some()
+                    && r.ctx
+                        .input(|i| i.pointer.interact_pos().is_some_and(|p| r.rect.contains(p)))))
             && r.ctx
                 .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
         {
-            r.ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+            platform::start_drag(&r.ctx);
         }
     }
     fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -411,7 +414,7 @@ impl App {
                 && ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
                 && !self.settings.lock_position
             {
-                ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                platform::start_drag(ctx);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
@@ -1013,6 +1016,7 @@ impl App {
 }
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        platform::prepare_overlay();
         let mut geometry = platform::desktop_geometry(ctx);
         if self.was_monitor {
             self.monitor_rect = geometry.as_ref().map(|g| g.window);

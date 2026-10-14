@@ -16,7 +16,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           for ($i=0; $i -lt 36; $i++) {
-            $r = Invoke-RestMethod -Headers @{Authorization="Bearer $env:GH_TOKEN"} -Uri 'https://api.github.com/repos/ArnoYixi/QuotaMonitori/actions/runs/38502156866/artifacts'
+            $r = Invoke-RestMethod -Headers @{Authorization="Bearer $env:GH_TOKEN"} -Uri 'https://api.github.com/repos/ArnoYixi/QuotaMonitori/actions/runs/38504133036/artifacts'
             if ($r.artifacts | Where-Object { $_.name -eq 'QuotaMonitori-windows-x64-static' }) { exit 0 }
             Start-Sleep -Seconds 10
           }
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: QuotaMonitori-windows-x64-static
-          run-id: 38502156866
+          run-id: 38504133036
           github-token: ${{ github.token }}
           path: dist
       - shell: pwsh
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: Verified-QuotaMonitori-windows-x64-static
+          name: Diagnostic-QuotaMonitori-windows-x64-static
           path: dist/
           compression-level: 0
       - uses: actions/upload-artifact@v4

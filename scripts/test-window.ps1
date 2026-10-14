@@ -187,7 +187,7 @@ try {
     TrayMenu 4
     $p.Refresh()
     if (-not $p.HasExited) { throw 'Tray Quit had no effect' }
-    @{ drag=$true; right_click_settings=$true; top_row=$true; bottom_row=$true; side_column=$true; no_taskbar=$true; adaptive_text=$true; tray_hide_show_settings_quit=$true } | ConvertTo-Json | Set-Content dist/window-test.json
+    @{ drag=([Math]::Abs($after.L-$before.L) -ge 30); right_click_settings=(($menu.B-$menu.T) -ge 400); top_row=$true; bottom_row=$true; side_column=$true; no_taskbar=(($style -band 0x40000) -eq 0 -and ($style -band 0x80) -ne 0); adaptive_text=$true; tray_hide_show_settings_quit=$true } | ConvertTo-Json | Set-Content dist/window-test.json
 
 } finally {
     if (-not $p.HasExited -and $hwnd -ne [IntPtr]::Zero) { Capture 'quota-end.png' }

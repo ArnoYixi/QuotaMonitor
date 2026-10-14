@@ -151,7 +151,7 @@ try {
     Start-Sleep -Seconds 2
     $recovered=Assert-Visible 'Top drag release'
     if (($recovered.R-$recovered.L) -ne ($top.R-$top.L)) { throw 'Top drag lost horizontal layout' }
-    foreach ($cornerX in @($work.L-20,$work.R-20)) {
+    foreach ($cornerX in @(($work.L-20),($work.R-20))) {
         [DesktopProbe]::SetWindowPos($hwnd,[IntPtr]::Zero,$cornerX,($work.T-12),0,0,0x15) | Out-Null
         Start-Sleep -Seconds 2
         $null=Assert-Visible 'Top corner recovery'

@@ -174,8 +174,10 @@ try {
     $dark.Save((Join-Path $env:RUNNER_TEMP 'quota-dark.png'))
     $light.Save((Join-Path $env:RUNNER_TEMP 'quota-light.png'))
     $dark.Dispose(); $light.Dispose(); $backdrop.Close(); $backdrop.Dispose()
-    if ($background.R -lt 245 -or $background.G -lt 245 -or $background.B -lt 245) { throw 'Test backdrop was obscured by another desktop window' }
-    if ($ink -lt 20 -or $inverted -lt $ink*0.8) { throw 'Text did not adapt from white to black on the changed desktop background' }
+    if ($ink -lt 20 -or $inverted -lt $ink*0.8) {
+        if ($background.R -lt 245 -or $background.G -lt 245 -or $background.B -lt 245) { throw 'Test backdrop was obscured; text contrast result is inconclusive' }
+        throw 'Text did not adapt from white to black on the changed desktop background'
+    }
     $script:tray=[DesktopProbe]::Find($p.Id,'tray_icon_app')
     if ($tray -eq [IntPtr]::Zero) { throw 'No native tray icon owner' }
     TrayMenu 1

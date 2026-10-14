@@ -496,11 +496,7 @@ impl App {
             ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
         let painter = ui.painter_at(rect);
         let track = if p == Some(0.0) && !stale {
-            if ui.visuals().dark_mode {
-                Color32::from_rgb(91, 43, 47)
-            } else {
-                Color32::from_rgb(248, 220, 222)
-            }
+            Color32::from_rgb(255, 48, 64)
         } else if ui.visuals().dark_mode {
             Color32::from_rgb(58, 66, 71)
         } else {

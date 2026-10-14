@@ -131,6 +131,7 @@ try {
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     $backdrop=New-Object System.Windows.Forms.Form
+    $backdrop.TopMost=$true
     $backdrop.AutoScaleMode='None'
     $backdrop.FormBorderStyle='None'
     $backdrop.StartPosition='Manual'
@@ -138,7 +139,7 @@ try {
     $backdrop.Size=New-Object System.Drawing.Size(($side.R-$side.L),($side.B-$side.T))
     $backdrop.BackColor=[System.Drawing.Color]::Black
     $backdrop.Show()
-    [DesktopProbe]::SetWindowPos($backdrop.Handle,[IntPtr]::Zero,$side.L,$side.T,($side.R-$side.L),($side.B-$side.T),0x14) | Out-Null
+    [DesktopProbe]::SetWindowPos($backdrop.Handle,$hwnd,$side.L,$side.T,($side.R-$side.L),($side.B-$side.T),0x10) | Out-Null
     $backdrop.Refresh()
     [System.Windows.Forms.Application]::DoEvents()
     [DesktopProbe]::SetForegroundWindow($hwnd) | Out-Null

@@ -42,6 +42,7 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
     }
     data
 }
+#[cfg(not(windows))]
 fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, String> {
     let menu = Menu::new();
     let show = MenuItem::new("显示悬浮窗", true, None);
@@ -110,6 +111,114 @@ fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, St
         .with_icon(icon)
         .build()
         .map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, String> {
+    TrayIconEvent::set_event_handler(Some(move |event| {
+        let action = match event {
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } => Some(TrayAction::Show),
+            TrayIconEvent::Click {
+                button: MouseButton::Right,
+                button_state: MouseButtonState::Down,
+                ..
+            } => native_tray_menu(),
+            _ => None,
+        };
+        if let Some(action) = action {
+            let _ = tx.send(action);
+            if matches!(action, TrayAction::Hide) {
+                unsafe {
+                    windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
+                        main_window(),
+                        windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+                    );
+                }
+            } else {
+                wake_window();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            }
+            ctx.request_repaint();
+        }
+    }));
+    let icon = tray_icon::Icon::from_rgba(icon_rgba(32), 32, 32).map_err(|e| e.to_string())?;
+    TrayIconBuilder::new()
+        .with_menu_on_left_click(false)
+        .with_tooltip("QuotaMonitori · 额度监听")
+        .with_icon(icon)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn native_tray_menu() -> Option<TrayAction> {
+    use windows_sys::Win32::{
+        Foundation::*, System::Threading::GetCurrentProcessId, UI::WindowsAndMessaging::*,
+    };
+    unsafe extern "system" fn visit(hwnd: HWND, output: LPARAM) -> i32 {
+        unsafe {
+            let mut pid = 0;
+            GetWindowThreadProcessId(hwnd, &mut pid);
+            if pid == GetCurrentProcessId() {
+                let mut class = [0u16; 64];
+                let n = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
+                if String::from_utf16_lossy(&class[..n as usize]) == "tray_icon_app" {
+                    *(output as *mut HWND) = hwnd;
+                    return 0;
+                }
+            }
+            1
+        }
+    }
+    unsafe {
+        let menu = CreatePopupMenu();
+        if menu.is_null() {
+            return None;
+        }
+        for (id, label) in [
+            (1, "显示悬浮窗"),
+            (2, "隐藏悬浮窗"),
+            (3, "刷新全部"),
+            (4, "设置"),
+            (5, "退出 QuotaMonitori"),
+        ] {
+            if id == 5 {
+                AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            }
+            let text: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+            AppendMenuW(menu, MF_STRING, id, text.as_ptr());
+        }
+        let mut owner = main_window();
+        EnumWindows(Some(visit), &mut owner as *mut HWND as isize);
+        let mut point = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut point);
+        SetForegroundWindow(owner);
+        // Return the selected ID directly: no WM_COMMAND/subclass forwarding
+        // through a third-party hidden window is needed.
+        let command = TrackPopupMenu(
+            menu,
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
+            point.x,
+            point.y,
+            0,
+            owner,
+            std::ptr::null(),
+        );
+        DestroyMenu(menu);
+        PostMessageW(owner, WM_NULL, 0, 0);
+        match command {
+            1 => Some(TrayAction::Show),
+            2 => Some(TrayAction::Hide),
+            3 => Some(TrayAction::Refresh),
+            4 => Some(TrayAction::Settings),
+            5 => Some(TrayAction::Quit),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]

@@ -5,6 +5,9 @@ using System.Text;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 public static class DesktopProbe {
+    [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, UIntPtr w, IntPtr l);
+    [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr h, IntPtr menu, uint item, out Rect r);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetMenuStringW(IntPtr menu, uint item, StringBuilder text, int count, uint flags);
     public delegate bool EnumProc(IntPtr h, IntPtr l);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc proc, IntPtr l);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
@@ -38,9 +41,19 @@ function TrayMenu([int]$index) {
     [DesktopProbe]::PostMessageW($script:tray,6002,[UIntPtr]::Zero,[IntPtr]0x204) | Out-Null
     Start-Sleep -Milliseconds 400
     if ([DesktopProbe]::Find($p.Id,'#32768') -eq [IntPtr]::Zero) { throw 'Native tray menu did not open' }
-    Key 0x24
-    for ($j=0; $j -lt $index; $j++) { Key 0x28 }
-    Key 0x0d
+    $popup=[DesktopProbe]::Find($p.Id,'#32768')
+    $menu=[DesktopProbe]::SendMessageW($popup,0x1e1,[UIntPtr]::Zero,[IntPtr]::Zero)
+    $nativeIndex=if ($index -eq 4) { 5 } else { $index }
+    $item=New-Object DesktopProbe+Rect
+    if (-not [DesktopProbe]::GetMenuItemRect([IntPtr]::Zero,$menu,$nativeIndex,[ref]$item)) { throw 'Cannot locate native menu item' }
+    $label=New-Object System.Text.StringBuilder 256
+    [DesktopProbe]::GetMenuStringW($menu,$nativeIndex,$label,256,0x400) | Out-Null
+    Write-Host "Click tray item: $label"
+    [DesktopProbe]::SetCursorPos([int](($item.L+$item.R)/2),[int](($item.T+$item.B)/2)) | Out-Null
+    Start-Sleep -Milliseconds 150
+    [DesktopProbe]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 120
+    [DesktopProbe]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 1400
 }
 function Rect { $r=New-Object DesktopProbe+Rect; [DesktopProbe]::GetWindowRect($script:hwnd,[ref]$r) | Out-Null; return $r }
@@ -66,6 +79,7 @@ try {
     Write-Host "Main window: $($p.MainWindowTitle); class: $class; size: $($before.R-$before.L) x $($before.B-$before.T)"
     $x=$before.L+30; $y=$before.T+30
     [DesktopProbe]::SetCursorPos($x,$y) | Out-Null
+    Start-Sleep -Milliseconds 300
     [DesktopProbe]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 250
     for ($i=1; $i -le 10; $i++) {
@@ -78,6 +92,7 @@ try {
     [DesktopProbe]::GetWindowRect($hwnd, [ref]$after) | Out-Null
     if ([Math]::Abs($after.L-$before.L) -lt 30) { throw 'Dragging the quota bar did not move the window' }
     [DesktopProbe]::SetCursorPos($after.L+30,$after.T+30) | Out-Null
+    Start-Sleep -Milliseconds 300
     [DesktopProbe]::mouse_event(8,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 120
     [DesktopProbe]::mouse_event(16,0,0,0,[UIntPtr]::Zero)

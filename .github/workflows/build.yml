@@ -47,6 +47,7 @@ jobs:
         shell: pwsh
         run: ./scripts/test-window.ps1
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: QuotaMonitori-windows-x64-static
           path: dist/

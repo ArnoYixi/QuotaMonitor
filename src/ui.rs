@@ -368,9 +368,8 @@ impl App {
         }
     }
     fn overlay_interaction(&mut self, r: &egui::Response, account: Option<&str>) {
-        if r.secondary_clicked() {
+        if r.hovered() && account.is_some() {
             self.context_account = account.map(String::from);
-            self.page = Page::Settings;
         }
         // Start on the press frame: waiting for the drag threshold is too late on Windows.
         if !self.settings.lock_position
@@ -960,6 +959,13 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.events(ctx);
+        // Handle the native press independently of widget click ownership. A system
+        // window drag may consume the preceding release event on Windows.
+        let show_settings = self.page == Page::Monitor
+            && ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
+        if show_settings {
+            self.context_account = None;
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.page = Page::Monitor;
         }
@@ -1035,6 +1041,9 @@ impl eframe::App for App {
                 }
             }
         });
+        if show_settings {
+            self.page = Page::Settings;
+        }
         let width = if self.page == Page::Monitor {
             if self.settings.view == "ring" {
                 (self

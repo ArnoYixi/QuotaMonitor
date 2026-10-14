@@ -39,10 +39,12 @@ try {
     if ([Math]::Abs($after.L-$before.L) -lt 30) { throw 'Dragging the quota bar did not move the window' }
     [DesktopProbe]::SetCursorPos($after.L+30,$after.T+30) | Out-Null
     [DesktopProbe]::mouse_event(8,0,0,0,[UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 120
     [DesktopProbe]::mouse_event(16,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Seconds 1
     $menu = New-Object DesktopProbe+Rect
     [DesktopProbe]::GetWindowRect($p.MainWindowHandle, [ref]$menu) | Out-Null
+    Write-Host "Window moved: $($before.L),$($before.T) -> $($after.L),$($after.T); settings size: $($menu.R-$menu.L) x $($menu.B-$menu.T)"
     if (($menu.B-$menu.T) -lt 400) { throw 'Right click did not open settings' }
     @{ drag=$true; right_click_settings=$true; before=@($before.L,$before.T); after=@($after.L,$after.T) } | ConvertTo-Json | Set-Content dist/window-test.json
 } finally {

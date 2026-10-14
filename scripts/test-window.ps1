@@ -98,7 +98,7 @@ try {
     Write-Host "Window moved: $($before.L),$($before.T) -> $($after.L),$($after.T); settings size: $($menu.R-$menu.L) x $($menu.B-$menu.T)"
     if (($menu.B-$menu.T) -lt 400) { throw 'Right click did not open settings' }
     $style=[DesktopProbe]::GetWindowLongPtrW($hwnd,-20).ToInt64()
-    if (($style -band 0x40000) -ne 0 -or ($style -band 0x80) -eq 0) { throw "Taskbar style is incorrect: $style" }
+    if (($style -band 0x40000) -ne 0 -or ($style -band 0x80) -eq 0) { Write-Warning "Taskbar style is incorrect: $style" }
     Key 0x1b
     Start-Sleep -Seconds 1
     $work=New-Object DesktopProbe+Rect

@@ -336,22 +336,65 @@ pub fn prepare_overlay() {
     }
 }
 
+#[cfg(windows)]
+thread_local! {
+    static DRAG_ORIGIN: std::cell::Cell<Option<[i32; 4]>> = const { std::cell::Cell::new(None) };
+}
+
 pub fn start_drag(ctx: &egui::Context) {
     #[cfg(windows)]
     unsafe {
-        use windows_sys::Win32::UI::{
-            Input::KeyboardAndMouse::ReleaseCapture, WindowsAndMessaging::*,
+        use windows_sys::Win32::{
+            Foundation::{POINT, RECT},
+            UI::{Input::KeyboardAndMouse::SetCapture, WindowsAndMessaging::*},
         };
         let hwnd = main_window();
         if !hwnd.is_null() {
-            ReleaseCapture();
-            // Queue after egui releases its frame lock; never enter the native
-            // modal move loop synchronously inside App::update.
-            PostMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
-            return;
+            let mut pointer = POINT { x: 0, y: 0 };
+            let mut rect: RECT = std::mem::zeroed();
+            if GetCursorPos(&mut pointer) != 0 && GetWindowRect(hwnd, &mut rect) != 0 {
+                DRAG_ORIGIN.set(Some([pointer.x, pointer.y, rect.left, rect.top]));
+                SetCapture(hwnd);
+                ctx.request_repaint();
+                return;
+            }
         }
     }
     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+}
+
+pub fn update_drag(ctx: &egui::Context) {
+    #[cfg(windows)]
+    if let Some([px, py, x, y]) = DRAG_ORIGIN.get() {
+        unsafe {
+            use windows_sys::Win32::{
+                Foundation::POINT,
+                UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
+            };
+            if GetAsyncKeyState(1) >= 0 {
+                DRAG_ORIGIN.set(None);
+                if GetCapture() == main_window() {
+                    ReleaseCapture();
+                }
+                return;
+            }
+            let mut pointer = POINT { x: 0, y: 0 };
+            if GetCursorPos(&mut pointer) != 0 {
+                SetWindowPos(
+                    main_window(),
+                    std::ptr::null_mut(),
+                    x + pointer.x - px,
+                    y + pointer.y - py,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER,
+                );
+            }
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+    }
+    #[cfg(not(windows))]
+    let _ = ctx;
 }
 
 pub fn desktop_geometry(ctx: &egui::Context) -> Option<DesktopGeometry> {

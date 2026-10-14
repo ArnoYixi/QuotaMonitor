@@ -1017,6 +1017,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         platform::prepare_overlay();
+        platform::update_drag(ctx);
         let mut geometry = platform::desktop_geometry(ctx);
         if self.was_monitor {
             self.monitor_rect = geometry.as_ref().map(|g| g.window);

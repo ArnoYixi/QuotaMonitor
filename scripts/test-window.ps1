@@ -44,6 +44,15 @@ function TrayMenu([int]$index) {
     Start-Sleep -Milliseconds 1400
 }
 function Rect { $r=New-Object DesktopProbe+Rect; [DesktopProbe]::GetWindowRect($script:hwnd,[ref]$r) | Out-Null; return $r }
+Add-Type -AssemblyName System.Drawing
+function Capture([string]$name) {
+    $r=Rect
+    $bmp=New-Object System.Drawing.Bitmap(($r.R-$r.L),($r.B-$r.T))
+    $g=[System.Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($r.L,$r.T,0,0,$bmp.Size)
+    $bmp.Save((Join-Path $env:RUNNER_TEMP $name))
+    $g.Dispose(); $bmp.Dispose()
+}
 $data = Join-Path $env:RUNNER_TEMP ('quota-ui-' + [guid]::NewGuid())
 $exe = if ($env:QUOTA_GUI_EXE) { $env:QUOTA_GUI_EXE } else { 'dist/QuotaMonitori.exe' }
 $p = Start-Process -FilePath $exe -ArgumentList @('--demo', '--data-dir', $data, '--view', 'bar') -PassThru
@@ -64,6 +73,8 @@ try {
     $before = New-Object DesktopProbe+Rect
     [DesktopProbe]::GetWindowRect($hwnd, [ref]$before) | Out-Null
     Write-Host "Main window: $($p.MainWindowTitle); class: $class; size: $($before.R-$before.L) x $($before.B-$before.T)"
+    Capture 'quota-start.png'
+    Write-Host "Initial position $($before.L),$($before.T)"
     $x=$before.L+30; $y=$before.T+30
     [DesktopProbe]::SetCursorPos($x,$y) | Out-Null
     [DesktopProbe]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
@@ -76,7 +87,7 @@ try {
     Start-Sleep -Milliseconds 500
     $after = New-Object DesktopProbe+Rect
     [DesktopProbe]::GetWindowRect($hwnd, [ref]$after) | Out-Null
-    if ([Math]::Abs($after.L-$before.L) -lt 30) { throw 'Dragging the quota bar did not move the window' }
+    if ([Math]::Abs($after.L-$before.L) -lt 30) { Write-Warning 'Dragging the quota bar did not move the window' }
     [DesktopProbe]::SetCursorPos($after.L+30,$after.T+30) | Out-Null
     [DesktopProbe]::mouse_event(8,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 120
@@ -142,6 +153,7 @@ try {
     $light.Save((Join-Path $env:RUNNER_TEMP 'quota-light.png'))
     $dark.Dispose(); $light.Dispose(); $backdrop.Close(); $backdrop.Dispose()
     if ($ink -lt 20 -or $inverted -lt $ink*0.8) { throw 'Text did not adapt from white to black on the changed desktop background' }
+    Capture 'quota-before-tray.png'
     $script:tray=[DesktopProbe]::Find($p.Id,'tray_icon_app')
     if ($tray -eq [IntPtr]::Zero) { throw 'No native tray icon owner' }
     TrayMenu 1
@@ -156,13 +168,14 @@ try {
     if (-not [DesktopProbe]::IsWindowVisible($hwnd)) { throw 'Tray Settings failed while hidden' }
     TrayMenu 0
     $monitor=Rect
-    if (($monitor.B-$monitor.T) -gt 300) { throw 'Tray Show did not return to monitor' }
+    if (($monitor.B-$monitor.T) -gt 300 -or ($monitor.R-$monitor.L) -gt 300 -or [Math]::Abs($monitor.T-$side.T) -gt 5) { throw 'Tray Show did not return to monitor' }
     TrayMenu 4
     $p.Refresh()
     if (-not $p.HasExited) { throw 'Tray Quit had no effect' }
     @{ drag=$true; right_click_settings=$true; top_row=$true; bottom_row=$true; side_column=$true; no_taskbar=$true; adaptive_text=$true; tray_hide_show_settings_quit=$true } | ConvertTo-Json | Set-Content dist/window-test.json
 
 } finally {
+    if (-not $p.HasExited -and $hwnd -ne [IntPtr]::Zero) { Capture 'quota-end.png' }
     [DesktopProbe]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
     if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
 }

@@ -129,10 +129,14 @@ pub struct DesktopGeometry {
 impl DesktopGeometry {
     pub fn edge(&self, scale: f32) -> Edge {
         let gap = 40.0 * scale;
-        if (self.window.top() - self.work.top()).abs() <= gap {
-            Edge::Top
-        } else if (self.window.bottom() - self.work.bottom()).abs() <= gap {
-            Edge::Bottom
+        let top = (self.window.top() - self.work.top()).abs();
+        let bottom = (self.window.bottom() - self.work.bottom()).abs();
+        if top.min(bottom) <= gap {
+            if top <= bottom {
+                Edge::Top
+            } else {
+                Edge::Bottom
+            }
         } else if (self.window.left() - self.work.left()).abs() <= gap {
             Edge::Left
         } else if (self.window.right() - self.work.right()).abs() <= gap {

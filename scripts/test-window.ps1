@@ -156,7 +156,7 @@ try {
     if (-not [DesktopProbe]::IsWindowVisible($hwnd)) { throw 'Tray Settings failed while hidden' }
     TrayMenu 0
     $monitor=Rect
-    if (($monitor.B-$monitor.T) -gt 300) { throw 'Tray Show did not return to monitor' }
+    if (($monitor.B-$monitor.T) -gt 300 -or ($monitor.R-$monitor.L) -gt 300 -or [Math]::Abs($monitor.T-$side.T) -gt 5) { throw 'Tray Show did not return to monitor' }
     TrayMenu 4
     $p.Refresh()
     if (-not $p.HasExited) { throw 'Tray Quit had no effect' }

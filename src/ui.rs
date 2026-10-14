@@ -51,6 +51,8 @@ pub struct App {
     context_account: Option<String>,
     edge: platform::Edge,
     columns: usize,
+    was_monitor: bool,
+    monitor_rect: Option<egui::Rect>,
 }
 impl App {
     pub fn new(
@@ -129,6 +131,8 @@ impl App {
             context_account: None,
             edge: platform::Edge::Free,
             columns: 1,
+            was_monitor: true,
+            monitor_rect: None,
         };
         app.apply_style(&cc.egui_ctx);
         app.save();
@@ -1009,12 +1013,18 @@ impl App {
 }
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let mut geometry = platform::desktop_geometry(ctx);
+        if self.was_monitor {
+            self.monitor_rect = geometry.as_ref().map(|g| g.window);
+        }
         self.events(ctx);
-        let geometry = platform::desktop_geometry(ctx);
         let count = self.settings.accounts.iter().filter(|a| a.visible).count();
         let scale = ctx.pixels_per_point();
         if self.page == Page::Monitor {
-            if let Some(g) = geometry.as_ref().filter(|g| !g.dragging) {
+            if let Some(g) = geometry
+                .as_ref()
+                .filter(|g| !g.dragging && self.was_monitor)
+            {
                 self.edge = g.edge(scale);
             }
             self.columns = match self.edge {
@@ -1120,6 +1130,12 @@ impl eframe::App for App {
         if show_settings {
             self.page = Page::Settings;
         }
+        if self.page == Page::Monitor && !self.was_monitor {
+            if let (Some(g), Some(rect)) = (geometry.as_mut(), self.monitor_rect) {
+                g.window = rect;
+            }
+            self.last_size = Vec2::ZERO;
+        }
         let ring = self.settings.view == "ring";
         let rows = count.div_ceil(self.columns.max(1));
         let width = if self.page != Page::Monitor {
@@ -1155,7 +1171,8 @@ impl eframe::App for App {
         if self.dirty && self.last_save.elapsed() > Duration::from_secs(2) {
             self.save();
         }
-        // Recheck freshness and persistence without a continuous rendering loop.
+        self.was_monitor = self.page == Page::Monitor;
+        // Keep background contrast current without a continuous rendering loop.
         ctx.request_repaint_after(Duration::from_secs(1));
     }
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {

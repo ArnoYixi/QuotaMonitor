@@ -43,6 +43,9 @@ jobs:
           if (-not $p.WaitForExit(60000)) { $p.Kill(); throw 'Runtime self-test timed out' }
           if ($p.ExitCode -ne 0) { Get-Content $report -ErrorAction SilentlyContinue; throw 'Runtime self-test failed' }
           Get-Content $report
+      - name: Prepare software graphics for headless CI
+        shell: pwsh
+        run: ./scripts/prepare-ui-test.ps1
       - name: Verify dragging and right click on Windows
         shell: pwsh
         run: ./scripts/test-window.ps1

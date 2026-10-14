@@ -1,8 +1,10 @@
 $ErrorActionPreference = 'Stop'
 Add-Type @'
 using System;
+using System.Text;
 using System.Runtime.InteropServices;
 public static class DesktopProbe {
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
     [StructLayout(LayoutKind.Sequential)] public struct Rect { public int L,T,R,B; }
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
@@ -11,7 +13,8 @@ public static class DesktopProbe {
 }
 '@
 $data = Join-Path $env:RUNNER_TEMP ('quota-ui-' + [guid]::NewGuid())
-$p = Start-Process -FilePath 'dist/QuotaMonitori.exe' -ArgumentList @('--demo', '--data-dir', $data, '--view', 'bar') -PassThru
+$exe = if ($env:QUOTA_GUI_EXE) { $env:QUOTA_GUI_EXE } else { 'dist/QuotaMonitori.exe' }
+$p = Start-Process -FilePath $exe -ArgumentList @('--demo', '--data-dir', $data, '--view', 'bar') -PassThru
 try {
     for ($i=0; $i -lt 30; $i++) {
         Start-Sleep -Milliseconds 300
@@ -21,9 +24,13 @@ try {
     }
     if ($p.MainWindowHandle -eq 0) { throw 'No native window' }
     Start-Sleep -Seconds 2
+    $class = New-Object System.Text.StringBuilder 256
+    [DesktopProbe]::GetClassName($p.MainWindowHandle, $class, 256) | Out-Null
+    if ($class.ToString() -eq '#32770') { throw 'Application showed an error dialog; this is not the floating window' }
     [DesktopProbe]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
     $before = New-Object DesktopProbe+Rect
     [DesktopProbe]::GetWindowRect($p.MainWindowHandle, [ref]$before) | Out-Null
+    Write-Host "Main window: $($p.MainWindowTitle); class: $class; size: $($before.R-$before.L) x $($before.B-$before.T)"
     $x=$before.L+30; $y=$before.T+30
     [DesktopProbe]::SetCursorPos($x,$y) | Out-Null
     [DesktopProbe]::mouse_event(2,0,0,0,[UIntPtr]::Zero)

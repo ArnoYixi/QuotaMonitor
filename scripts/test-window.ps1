@@ -143,6 +143,8 @@ try {
     $backdrop.Refresh()
     [System.Windows.Forms.Application]::DoEvents()
     [DesktopProbe]::SetForegroundWindow($hwnd) | Out-Null
+    [DesktopProbe]::SetWindowPos($backdrop.Handle,[IntPtr](-1),$side.L,$side.T,($side.R-$side.L),($side.B-$side.T),0x10) | Out-Null
+    [DesktopProbe]::SetWindowPos($hwnd,[IntPtr](-1),0,0,0,0,0x13) | Out-Null
     Start-Sleep -Seconds 3
     $dark=New-Object System.Drawing.Bitmap(($side.R-$side.L),($side.B-$side.T))
     $g=[System.Drawing.Graphics]::FromImage($dark)
@@ -151,11 +153,15 @@ try {
     $backdrop.BackColor=[System.Drawing.Color]::White
     $backdrop.Refresh()
     [System.Windows.Forms.Application]::DoEvents()
+    [DesktopProbe]::SetWindowPos($backdrop.Handle,[IntPtr](-1),$side.L,$side.T,($side.R-$side.L),($side.B-$side.T),0x10) | Out-Null
+    [DesktopProbe]::SetWindowPos($hwnd,[IntPtr](-1),0,0,0,0,0x13) | Out-Null
     Start-Sleep -Seconds 3
     $light=New-Object System.Drawing.Bitmap($dark.Width,$dark.Height)
     $g=[System.Drawing.Graphics]::FromImage($light)
     $g.CopyFromScreen($side.L,$side.T,0,0,$light.Size)
     $g.Dispose()
+    $background=$light.GetPixel($light.Width-3,2)
+    Write-Host "White backdrop probe: $background"
     $ink=0; $inverted=0
     for ($y=[int](5*$scale); $y -lt 19*$scale; $y++) { for ($x=[int](6*$scale); $x -lt 125*$scale; $x++) {
         $d=$dark.GetPixel($x,$y); $l=$light.GetPixel($x,$y)
@@ -168,6 +174,7 @@ try {
     $dark.Save((Join-Path $env:RUNNER_TEMP 'quota-dark.png'))
     $light.Save((Join-Path $env:RUNNER_TEMP 'quota-light.png'))
     $dark.Dispose(); $light.Dispose(); $backdrop.Close(); $backdrop.Dispose()
+    if ($background.R -lt 245 -or $background.G -lt 245 -or $background.B -lt 245) { throw 'Test backdrop was obscured by another desktop window' }
     if ($ink -lt 20 -or $inverted -lt $ink*0.8) { throw 'Text did not adapt from white to black on the changed desktop background' }
     $script:tray=[DesktopProbe]::Find($p.Id,'tray_icon_app')
     if ($tray -eq [IntPtr]::Zero) { throw 'No native tray icon owner' }

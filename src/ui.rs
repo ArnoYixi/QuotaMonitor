@@ -637,18 +637,23 @@ impl App {
         let can =
             q.is_some_and(|q| q.choose_card(now()).is_ok()) && s.status == Status::Ready && !stale;
         if can || s.pending || s.status == Status::Resetting {
-            if ui
-                .add_enabled(
-                    s.status != Status::Resetting && s.status != Status::Paused,
-                    egui::Button::new(if s.status == Status::Resetting {
-                        "处理中"
-                    } else if s.pending {
-                        "核对重置"
-                    } else {
-                        "重置"
-                    })
-                    .frame(false),
-                )
+            let text = if s.status == Status::Resetting {
+                "处理中"
+            } else if s.pending {
+                "核对重置"
+            } else {
+                "重置"
+            };
+            let enabled = s.status != Status::Resetting && s.status != Status::Paused;
+            let response = ui
+                .add_enabled_ui(enabled, |ui| {
+                    Self::overlay_text(ui, text.into(), 12.0, 80.0)
+                })
+                .inner;
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text));
+            if response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text("使用最早到期的 1 张重置卡")
                 .clicked()
             {
@@ -656,6 +661,7 @@ impl App {
             }
         }
     }
+
     fn accounts(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.label(RichText::new("账号管理").size(18.0).strong());
         let mut moves = None;

@@ -52,17 +52,17 @@ try {
         Start-Sleep -Milliseconds 300
         $p.Refresh()
         if ($p.HasExited) { throw 'Window process exited' }
-        if ($p.MainWindowHandle -ne 0) { break }
+        $script:hwnd=[DesktopProbe]::Find($p.Id,'Window Class')
+        if ($hwnd -ne [IntPtr]::Zero) { break }
     }
-    if ($p.MainWindowHandle -eq 0) { throw 'No native window' }
-    $script:hwnd = $p.MainWindowHandle
+    if ($hwnd -eq [IntPtr]::Zero) { throw 'No native floating window' }
     Start-Sleep -Seconds 2
     $class = New-Object System.Text.StringBuilder 256
-    [DesktopProbe]::GetClassName($p.MainWindowHandle, $class, 256) | Out-Null
+    [DesktopProbe]::GetClassName($hwnd, $class, 256) | Out-Null
     if ($class.ToString() -eq '#32770') { throw 'Application showed an error dialog; this is not the floating window' }
-    [DesktopProbe]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+    [DesktopProbe]::SetForegroundWindow($hwnd) | Out-Null
     $before = New-Object DesktopProbe+Rect
-    [DesktopProbe]::GetWindowRect($p.MainWindowHandle, [ref]$before) | Out-Null
+    [DesktopProbe]::GetWindowRect($hwnd, [ref]$before) | Out-Null
     Write-Host "Main window: $($p.MainWindowTitle); class: $class; size: $($before.R-$before.L) x $($before.B-$before.T)"
     $x=$before.L+30; $y=$before.T+30
     [DesktopProbe]::SetCursorPos($x,$y) | Out-Null
@@ -75,7 +75,7 @@ try {
     [DesktopProbe]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 500
     $after = New-Object DesktopProbe+Rect
-    [DesktopProbe]::GetWindowRect($p.MainWindowHandle, [ref]$after) | Out-Null
+    [DesktopProbe]::GetWindowRect($hwnd, [ref]$after) | Out-Null
     if ([Math]::Abs($after.L-$before.L) -lt 30) { throw 'Dragging the quota bar did not move the window' }
     [DesktopProbe]::SetCursorPos($after.L+30,$after.T+30) | Out-Null
     [DesktopProbe]::mouse_event(8,0,0,0,[UIntPtr]::Zero)
@@ -83,7 +83,7 @@ try {
     [DesktopProbe]::mouse_event(16,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Seconds 1
     $menu = New-Object DesktopProbe+Rect
-    [DesktopProbe]::GetWindowRect($p.MainWindowHandle, [ref]$menu) | Out-Null
+    [DesktopProbe]::GetWindowRect($hwnd, [ref]$menu) | Out-Null
     Write-Host "Window moved: $($before.L),$($before.T) -> $($after.L),$($after.T); settings size: $($menu.R-$menu.L) x $($menu.B-$menu.T)"
     if (($menu.B-$menu.T) -lt 400) { throw 'Right click did not open settings' }
     $style=[DesktopProbe]::GetWindowLongPtrW($hwnd,-20).ToInt64()
@@ -104,6 +104,44 @@ try {
     Start-Sleep -Seconds 2
     $side=Rect
     if (($side.R-$side.L) -gt 300 -or ($side.B-$side.T) -lt 150) { throw 'Side edge did not switch back to a column' }
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    $backdrop=New-Object System.Windows.Forms.Form
+    $backdrop.FormBorderStyle='None'
+    $backdrop.StartPosition='Manual'
+    $backdrop.Location=New-Object System.Drawing.Point($side.L,$side.T)
+    $backdrop.Size=New-Object System.Drawing.Size(($side.R-$side.L),($side.B-$side.T))
+    $backdrop.BackColor=[System.Drawing.Color]::Black
+    $backdrop.Show()
+    $backdrop.Refresh()
+    [System.Windows.Forms.Application]::DoEvents()
+    [DesktopProbe]::SetForegroundWindow($hwnd) | Out-Null
+    Start-Sleep -Seconds 3
+    $dark=New-Object System.Drawing.Bitmap(($side.R-$side.L),($side.B-$side.T))
+    $g=[System.Drawing.Graphics]::FromImage($dark)
+    $g.CopyFromScreen($side.L,$side.T,0,0,$dark.Size)
+    $g.Dispose()
+    $backdrop.BackColor=[System.Drawing.Color]::White
+    $backdrop.Refresh()
+    [System.Windows.Forms.Application]::DoEvents()
+    Start-Sleep -Seconds 3
+    $light=New-Object System.Drawing.Bitmap($dark.Width,$dark.Height)
+    $g=[System.Drawing.Graphics]::FromImage($light)
+    $g.CopyFromScreen($side.L,$side.T,0,0,$light.Size)
+    $g.Dispose()
+    $ink=0; $inverted=0
+    for ($y=5; $y -lt 19; $y++) { for ($x=6; $x -lt 125; $x++) {
+        $d=$dark.GetPixel($x,$y); $l=$light.GetPixel($x,$y)
+        if ($d.R -gt 240 -and $d.G -gt 240 -and $d.B -gt 240) {
+            $ink++
+            if ($l.R -lt 30 -and $l.G -lt 30 -and $l.B -lt 30) { $inverted++ }
+        }
+    } }
+    Write-Host "Adaptive text: $inverted / $ink glyph pixels inverted on light background"
+    $dark.Save((Join-Path $env:RUNNER_TEMP 'quota-dark.png'))
+    $light.Save((Join-Path $env:RUNNER_TEMP 'quota-light.png'))
+    $dark.Dispose(); $light.Dispose(); $backdrop.Close(); $backdrop.Dispose()
+    if ($ink -lt 20 -or $inverted -lt $ink*0.8) { throw 'Text did not adapt from white to black on the changed desktop background' }
     $script:tray=[DesktopProbe]::Find($p.Id,'tray_icon_app')
     if ($tray -eq [IntPtr]::Zero) { throw 'No native tray icon owner' }
     TrayMenu 1
@@ -122,7 +160,7 @@ try {
     TrayMenu 4
     $p.Refresh()
     if (-not $p.HasExited) { throw 'Tray Quit had no effect' }
-    @{ drag=$true; right_click_settings=$true; top_row=$true; bottom_row=$true; side_column=$true; no_taskbar=$true; tray_hide_show_settings_quit=$true } | ConvertTo-Json | Set-Content dist/window-test.json
+    @{ drag=$true; right_click_settings=$true; top_row=$true; bottom_row=$true; side_column=$true; no_taskbar=$true; adaptive_text=$true; tray_hide_show_settings_quit=$true } | ConvertTo-Json | Set-Content dist/window-test.json
 
 } finally {
     [DesktopProbe]::mouse_event(4,0,0,0,[UIntPtr]::Zero)

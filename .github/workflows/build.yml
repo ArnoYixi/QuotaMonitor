@@ -46,7 +46,7 @@ jobs:
       - name: Prepare software graphics for headless CI
         shell: pwsh
         run: ./scripts/prepare-ui-test.ps1
-      - name: Verify dragging and right click on Windows
+      - name: Verify layout, contrast, dragging and tray controls
         shell: pwsh
         run: ./scripts/test-window.ps1
       - uses: actions/upload-artifact@v4

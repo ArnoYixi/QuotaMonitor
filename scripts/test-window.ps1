@@ -8,6 +8,8 @@ public static class DesktopProbe {
     [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, UIntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr h, IntPtr menu, uint item, out Rect r);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetMenuStringW(IntPtr menu, uint item, StringBuilder text, int count, uint flags);
+    [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hwnd);
     public delegate bool EnumProc(IntPtr h, IntPtr l);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc proc, IntPtr l);
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
@@ -31,6 +33,7 @@ public static class DesktopProbe {
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
 }
 '@
+[DesktopProbe]::SetThreadDpiAwarenessContext([IntPtr](-4)) | Out-Null
 function Key([byte]$key) {
     [DesktopProbe]::keybd_event($key,0,0,[UIntPtr]::Zero)
     [DesktopProbe]::keybd_event($key,0,2,[UIntPtr]::Zero)
@@ -39,9 +42,13 @@ function Key([byte]$key) {
 function TrayMenu([int]$index) {
     [DesktopProbe]::SetCursorPos(500,450) | Out-Null
     [DesktopProbe]::PostMessageW($script:tray,6002,[UIntPtr]::Zero,[IntPtr]0x204) | Out-Null
-    Start-Sleep -Milliseconds 400
-    if ([DesktopProbe]::Find($p.Id,'#32768') -eq [IntPtr]::Zero) { throw 'Native tray menu did not open' }
-    $popup=[DesktopProbe]::Find($p.Id,'#32768')
+    $popup=[IntPtr]::Zero
+    for ($wait=0; $wait -lt 30; $wait++) {
+        Start-Sleep -Milliseconds 100
+        $popup=[DesktopProbe]::Find($p.Id,'#32768')
+        if ($popup -ne [IntPtr]::Zero) { break }
+    }
+    if ($popup -eq [IntPtr]::Zero) { throw 'Native tray menu did not open' }
     $menu=[DesktopProbe]::SendMessageW($popup,0x1e1,[UIntPtr]::Zero,[IntPtr]::Zero)
     $nativeIndex=if ($index -eq 4) { 5 } else { $index }
     $item=New-Object DesktopProbe+Rect
@@ -70,6 +77,8 @@ try {
     }
     if ($hwnd -eq [IntPtr]::Zero) { throw 'No native floating window' }
     Start-Sleep -Seconds 2
+    $scale=[DesktopProbe]::GetDpiForWindow($hwnd)/96.0
+    Write-Host "Desktop DPI scale: $scale"
     $class = New-Object System.Text.StringBuilder 256
     [DesktopProbe]::GetClassName($hwnd, $class, 256) | Out-Null
     if ($class.ToString() -eq '#32770') { throw 'Application showed an error dialog; this is not the floating window' }
@@ -77,7 +86,7 @@ try {
     $before = New-Object DesktopProbe+Rect
     [DesktopProbe]::GetWindowRect($hwnd, [ref]$before) | Out-Null
     Write-Host "Main window: $($p.MainWindowTitle); class: $class; size: $($before.R-$before.L) x $($before.B-$before.T)"
-    $x=$before.L+30; $y=$before.T+30
+    $x=$before.L+[int](30*$scale); $y=$before.T+[int](30*$scale)
     [DesktopProbe]::SetCursorPos($x,$y) | Out-Null
     Start-Sleep -Milliseconds 300
     [DesktopProbe]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
@@ -91,7 +100,7 @@ try {
     $after = New-Object DesktopProbe+Rect
     [DesktopProbe]::GetWindowRect($hwnd, [ref]$after) | Out-Null
     if ([Math]::Abs($after.L-$before.L) -lt 30) { throw 'Dragging the quota bar did not move the window' }
-    [DesktopProbe]::SetCursorPos($after.L+30,$after.T+30) | Out-Null
+    [DesktopProbe]::SetCursorPos($after.L+[int](30*$scale),$after.T+[int](30*$scale)) | Out-Null
     Start-Sleep -Milliseconds 300
     [DesktopProbe]::mouse_event(8,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 120
@@ -100,7 +109,7 @@ try {
     $menu = New-Object DesktopProbe+Rect
     [DesktopProbe]::GetWindowRect($hwnd, [ref]$menu) | Out-Null
     Write-Host "Window moved: $($before.L),$($before.T) -> $($after.L),$($after.T); settings size: $($menu.R-$menu.L) x $($menu.B-$menu.T)"
-    if (($menu.B-$menu.T) -lt 400) { throw 'Right click did not open settings' }
+    if (($menu.B-$menu.T) -lt 400*$scale) { throw 'Right click did not open settings' }
     $style=[DesktopProbe]::GetWindowLongPtrW($hwnd,-20).ToInt64()
     if (($style -band 0x40000) -ne 0 -or ($style -band 0x80) -eq 0) { throw "Taskbar style is incorrect: $style" }
     Key 0x1b
@@ -110,24 +119,27 @@ try {
     [DesktopProbe]::SetWindowPos($hwnd,[IntPtr]::Zero,200,$work.T+4,0,0,0x15) | Out-Null
     Start-Sleep -Seconds 2
     $top=Rect
-    if (($top.R-$top.L) -lt 450 -or ($top.B-$top.T) -gt 150) { throw 'Top edge did not switch to a horizontal row' }
+    if (($top.R-$top.L) -lt 450*$scale -or ($top.B-$top.T) -gt 150*$scale) { throw 'Top edge did not switch to a horizontal row' }
     [DesktopProbe]::SetWindowPos($hwnd,[IntPtr]::Zero,200,$work.B-($top.B-$top.T)-4,0,0,0x15) | Out-Null
     Start-Sleep -Seconds 2
     $bottom=Rect
-    if (($bottom.R-$bottom.L) -lt 450 -or $bottom.B -gt $work.B) { throw 'Bottom edge layout is invalid' }
+    if (($bottom.R-$bottom.L) -lt 450*$scale -or $bottom.B -gt $work.B) { throw 'Bottom edge layout is invalid' }
     [DesktopProbe]::SetWindowPos($hwnd,[IntPtr]::Zero,$work.L+4,200,0,0,0x15) | Out-Null
     Start-Sleep -Seconds 2
     $side=Rect
-    if (($side.R-$side.L) -gt 300 -or ($side.B-$side.T) -lt 150) { throw 'Side edge did not switch back to a column' }
+    if (($side.R-$side.L) -gt 300*$scale -or ($side.B-$side.T) -lt 150*$scale) { throw 'Side edge did not switch back to a column' }
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
     $backdrop=New-Object System.Windows.Forms.Form
+    $backdrop.TopMost=$true
+    $backdrop.AutoScaleMode='None'
     $backdrop.FormBorderStyle='None'
     $backdrop.StartPosition='Manual'
     $backdrop.Location=New-Object System.Drawing.Point($side.L,$side.T)
     $backdrop.Size=New-Object System.Drawing.Size(($side.R-$side.L),($side.B-$side.T))
     $backdrop.BackColor=[System.Drawing.Color]::Black
     $backdrop.Show()
+    [DesktopProbe]::SetWindowPos($backdrop.Handle,$hwnd,$side.L,$side.T,($side.R-$side.L),($side.B-$side.T),0x10) | Out-Null
     $backdrop.Refresh()
     [System.Windows.Forms.Application]::DoEvents()
     [DesktopProbe]::SetForegroundWindow($hwnd) | Out-Null
@@ -145,7 +157,7 @@ try {
     $g.CopyFromScreen($side.L,$side.T,0,0,$light.Size)
     $g.Dispose()
     $ink=0; $inverted=0
-    for ($y=5; $y -lt 19; $y++) { for ($x=6; $x -lt 125; $x++) {
+    for ($y=[int](5*$scale); $y -lt 19*$scale; $y++) { for ($x=[int](6*$scale); $x -lt 125*$scale; $x++) {
         $d=$dark.GetPixel($x,$y); $l=$light.GetPixel($x,$y)
         if ($d.R -gt 240 -and $d.G -gt 240 -and $d.B -gt 240) {
             $ink++
@@ -165,13 +177,13 @@ try {
     if (-not [DesktopProbe]::IsWindowVisible($hwnd)) { throw 'Tray Show failed to restore hidden window' }
     TrayMenu 3
     $settings=Rect
-    if (($settings.B-$settings.T) -lt 400) { throw 'Tray Settings had no effect' }
+    if (($settings.B-$settings.T) -lt 400*$scale) { throw 'Tray Settings had no effect' }
     TrayMenu 1
     TrayMenu 3
     if (-not [DesktopProbe]::IsWindowVisible($hwnd)) { throw 'Tray Settings failed while hidden' }
     TrayMenu 0
     $monitor=Rect
-    if (($monitor.B-$monitor.T) -gt 300 -or ($monitor.R-$monitor.L) -gt 300 -or [Math]::Abs($monitor.T-$side.T) -gt 5) { throw 'Tray Show did not return to monitor' }
+    if (($monitor.B-$monitor.T) -gt 300*$scale -or ($monitor.R-$monitor.L) -gt 300*$scale -or [Math]::Abs($monitor.T-$side.T) -gt 5) { throw 'Tray Show did not return to monitor' }
     TrayMenu 4
     $p.Refresh()
     if (-not $p.HasExited) { throw 'Tray Quit had no effect' }

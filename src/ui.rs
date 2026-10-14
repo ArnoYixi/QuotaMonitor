@@ -1099,12 +1099,6 @@ impl eframe::App for App {
                 ))
         };
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            let background = ui.interact(
-                ui.max_rect(),
-                ui.id().with("context"),
-                Sense::click_and_drag(),
-            );
-            self.overlay_interaction(&background, None);
             if self.page != Page::Monitor {
                 self.header(ui, ctx);
             }

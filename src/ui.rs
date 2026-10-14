@@ -48,6 +48,7 @@ pub struct App {
     last_demo_refresh: Instant,
     last_size: Vec2,
     need_login: Option<String>,
+    context_account: Option<String>,
 }
 impl App {
     pub fn new(
@@ -123,6 +124,7 @@ impl App {
             last_demo_refresh: Instant::now(),
             last_size: Vec2::ZERO,
             need_login: None,
+            context_account: None,
         };
         app.apply_style(&cc.egui_ctx);
         app.save();
@@ -365,6 +367,17 @@ impl App {
             }
         }
     }
+    fn overlay_interaction(&mut self, r: &egui::Response, account: Option<&str>) {
+        if r.secondary_clicked() {
+            self.context_account = account.map(String::from);
+            self.page = Page::Settings;
+        }
+        // Start on the press frame: waiting for the drag threshold is too late on Windows.
+        if !self.settings.lock_position && r.is_pointer_button_down_on()
+            && r.ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary)) {
+            r.ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+    }
     fn header(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             if self.page != Page::Monitor {
@@ -380,7 +393,7 @@ impl App {
             let resp = ui.add(
                 egui::Label::new(RichText::new(label).strong().size(14.0)).sense(Sense::drag()),
             );
-            if resp.drag_started() && !self.settings.lock_position {
+            if resp.is_pointer_button_down_on() && ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary)) && !self.settings.lock_position {
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -428,7 +441,7 @@ impl App {
     fn progress(ui: &mut egui::Ui, p: Option<f64>, ring: bool, stale: bool) -> egui::Response {
         let width = if ring { 74.0 } else { ui.available_width() };
         let height = if ring { 74.0 } else { 8.0 };
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
         let painter = ui.painter_at(rect);
         let track = if p == Some(0.0) && !stale {
             if ui.visuals().dark_mode {
@@ -489,163 +502,59 @@ impl App {
         }
         response
     }
-    fn monitor(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let accounts: Vec<_> = self
-            .settings
-            .accounts
-            .iter()
-            .filter(|a| a.visible)
-            .cloned()
-            .collect();
+    fn monitor(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+        let accounts: Vec<_> = self.settings.accounts.iter().filter(|a| a.visible).cloned().collect();
         if accounts.is_empty() {
-            ui.add_space(18.0);
-            ui.label("把账号额度放在桌面一角");
-            ui.label(RichText::new("登录后每 10 或 30 秒自动更新").small().weak());
-            ui.add_space(10.0);
-            if ui.button("＋ 添加 OpenAI 账号").clicked() {
-                self.add(ctx);
-            }
-            ui.add_space(12.0);
-        }
-        if self.settings.view == "ring" {
+            let r = ui.add(egui::Label::new("右键添加账号").sense(Sense::click_and_drag()));
+            self.overlay_interaction(&r, None);
+        } else if self.settings.view == "ring" {
             for row in accounts.chunks(3) {
                 ui.horizontal(|ui| {
                     for a in row {
-                        ui.allocate_ui(Vec2::new(102.0, 150.0), |ui| {
-                            ui.vertical_centered(|ui| {
-                                self.account_widget(ui, a, true);
-                            });
+                        ui.allocate_ui(Vec2::new(86.0, 100.0), |ui| {
+                            ui.vertical_centered(|ui| self.account_widget(ui, a, true));
                         });
                     }
                 });
             }
         } else {
-            for a in &accounts {
-                self.account_widget(ui, a, false);
-                ui.add_space(4.0);
-            }
-        }
-        ui.separator();
-        ui.horizontal(|ui| {
-            if ui.small_button("＋ 账号").clicked() {
-                self.page = Page::Accounts;
-            }
-            if ui.small_button("刷新").clicked() {
-                self.refresh_all();
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("{} 秒刷新", self.settings.interval))
-                        .small()
-                        .weak(),
-                );
-            });
-        });
-        if !self.notice.is_empty() {
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(&self.notice)
-                    .small()
-                    .color(Color32::from_rgb(223, 163, 70)),
-            );
+            for a in &accounts { self.account_widget(ui, a, false); }
         }
     }
     fn account_widget(&mut self, ui: &mut egui::Ui, a: &AccountConfig, ring: bool) {
-        let s = self
-            .states
-            .get(&a.id)
-            .cloned()
+        let s = self.states.get(&a.id).cloned()
             .unwrap_or_else(|| ViewState::new(a.id.clone(), a.cached.clone()));
         let q = s.quota.as_ref();
-        let tight = q.and_then(Quota::tightest);
-        let p = tight.as_ref().map(|(_, w)| w.remaining());
-        let stale =
-            s.status != Status::Ready || q.is_none_or(|q| q.stale(now(), self.settings.interval));
-        let count = q
-            .and_then(Quota::card_count)
-            .map(|n| n.to_string())
-            .unwrap_or("—".into());
-        let status = match s.status {
-            Status::Connecting => "连接中",
-            Status::LoggedOut => "待登录",
-            Status::WaitingLogin => "登录中",
-            Status::Paused => "已暂停",
-            Status::Resetting => "处理中",
-            Status::Error => "更新失败",
-            Status::Ready if stale => "数据已过期",
-            _ => "",
+        let p = q.and_then(Quota::tightest).map(|(_, w)| w.remaining());
+        let stale = s.status != Status::Ready || q.is_none_or(|q| q.stale(now(), self.settings.interval));
+        let color = if stale { Color32::GRAY } else {
+            let [r, g, b] = quota_color(p.unwrap_or(0.0));
+            Color32::from_rgb(r, g, b)
         };
+        let alias = if self.demo { format!("{} · 演示", a.alias) } else { a.alias.clone() };
         if ring {
-            if ui.add(egui::Button::new(&a.alias).frame(false)).clicked() {
-                self.page = Page::Detail(a.id.clone());
-            }
-            Self::progress(ui, p, true, stale);
-            ui.label(
-                RichText::new(format!(
-                    "卡 {count} · {}",
-                    tight.as_ref().map(|(_, w)| w.label()).unwrap_or("—".into())
-                ))
-                .small()
-                .weak(),
-            );
+            let r = ui.add(egui::Label::new(&alias).truncate().sense(Sense::click_and_drag()));
+            self.overlay_interaction(&r, Some(&a.id));
         } else {
             ui.horizontal(|ui| {
-                if ui
-                    .add(egui::Button::new(RichText::new(&a.alias).strong()).frame(false))
-                    .clicked()
-                {
-                    self.page = Page::Detail(a.id.clone());
-                }
+                let r = ui.add(egui::Label::new(&alias).truncate().sense(Sense::click_and_drag()));
+                self.overlay_interaction(&r, Some(&a.id));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let text = RichText::new(p.map(remaining_text).unwrap_or("—".into()));
-                    ui.label(if stale {
-                        text.weak()
-                    } else {
-                        text.color(
-                            p.map(|value| {
-                                let [r, g, b] = quota_color(value);
-                                Color32::from_rgb(r, g, b)
-                            })
-                            .unwrap_or(ui.visuals().weak_text_color()),
-                        )
-                    });
-                    ui.label(RichText::new(format!("卡 {count}")).small().weak());
+                    let r = ui.add(egui::Label::new(RichText::new(p.map(remaining_text).unwrap_or("—".into())).color(color)).sense(Sense::click_and_drag()));
+                    self.overlay_interaction(&r, Some(&a.id));
                 });
             });
-            Self::progress(ui, p, false, stale);
         }
-        let can =
-            q.is_some_and(|q| q.choose_card(now()).is_ok()) && s.status == Status::Ready && !stale;
-        let pending = s.pending && s.status != Status::Resetting && s.status != Status::Paused;
-        if can || pending || s.status == Status::Resetting {
-            if ui
-                .add_enabled(
-                    s.status != Status::Resetting,
-                    egui::Button::new(if s.pending {
-                        "核对重置"
-                    } else if s.status == Status::Resetting {
-                        "处理中…"
-                    } else {
-                        "使用 1 张"
-                    }),
-                )
-                .on_hover_text("自动使用最早到期的可用重置卡")
-                .clicked()
-            {
+        let r = Self::progress(ui, p, ring, stale);
+        self.overlay_interaction(&r, Some(&a.id));
+        let can = q.is_some_and(|q| q.choose_card(now()).is_ok()) && s.status == Status::Ready && !stale;
+        if can || s.pending || s.status == Status::Resetting {
+            if ui.add_enabled(s.status != Status::Resetting && s.status != Status::Paused,
+                egui::Button::new(if s.status == Status::Resetting { "处理中" } else if s.pending { "核对重置" } else { "重置" }).frame(false))
+                .on_hover_text("使用最早到期的 1 张重置卡").clicked() {
                 self.send(&a.id, Command::Reset);
             }
-        } else if !status.is_empty() {
-            ui.label(RichText::new(status).small().weak());
-        } else if !ring {
-            ui.label(
-                RichText::new(
-                    tight
-                        .map(|(label, w)| format!("{label} · {} 恢复", time_label(w.resets_at)))
-                        .unwrap_or("暂无可显示的额度周期".into()),
-                )
-                .small()
-                .weak(),
-            );
         }
     }
     fn accounts(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -870,6 +779,12 @@ impl App {
     }
     fn settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.label(RichText::new("设置").size(18.0).strong());
+        if let Some(id) = self.context_account.clone() {
+            if ui.button("此账号详情").clicked() { self.page = Page::Detail(id); }
+        }
+        if ui.button("刷新全部").clicked() { self.refresh_all(); }
+        if ui.button("添加账号").clicked() { self.add(ctx); }
+
         let before = self.settings.clone();
         ui.horizontal(|ui| {
             ui.label("显示方式");
@@ -881,7 +796,7 @@ impl App {
             ui.selectable_value(&mut self.settings.interval, 10, "10 秒");
             ui.selectable_value(&mut self.settings.interval, 30, "30 秒");
         });
-        ui.add(egui::Slider::new(&mut self.settings.opacity, 0.45..=1.0).text("不透明度"));
+        ui.add(egui::Slider::new(&mut self.settings.opacity, 0.45..=1.0).text("设置面板不透明度"));
         ui.add(egui::Slider::new(&mut self.settings.scale, 0.8..=1.8).text("界面缩放"));
         ui.checkbox(&mut self.settings.always_on_top, "始终置顶");
         ui.checkbox(&mut self.settings.lock_position, "锁定窗口位置");
@@ -988,6 +903,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.events(ctx);
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { self.page = Page::Monitor; }
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.tray_available {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
@@ -1011,7 +927,7 @@ impl eframe::App for App {
         } else {
             Color32::from_rgba_unmultiplied(26, 32, 36, (255.0 * self.settings.opacity) as u8)
         };
-        let frame = egui::Frame::new()
+        let frame = if self.page == Page::Monitor { egui::Frame::NONE.inner_margin(4) } else { egui::Frame::new()
             .fill(fill)
             .corner_radius(12)
             .inner_margin(12)
@@ -1022,10 +938,11 @@ impl eframe::App for App {
                 } else {
                     Color32::from_rgb(61, 75, 75)
                 },
-            ));
+            )) };
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            let background = ui.interact(ui.max_rect(), ui.id().with("context"), Sense::click());
-            self.header(ui, ctx);
+            let background = ui.interact(ui.max_rect(), ui.id().with("context"), Sense::click_and_drag());
+            self.overlay_interaction(&background, None);
+            if self.page != Page::Monitor { self.header(ui, ctx); }
             match self.page.clone() {
                 Page::Monitor => {
                     egui::ScrollArea::vertical()
@@ -1048,29 +965,9 @@ impl eframe::App for App {
                         .show(ui, |ui| self.detail(ui, &id));
                 }
             }
-            background.context_menu(|ui| {
-                if ui.button("设置").clicked() {
-                    self.page = Page::Settings;
-                    ui.close();
-                }
-                if ui.button("刷新全部").clicked() {
-                    self.refresh_all();
-                    ui.close();
-                }
-                if ui.button("恢复窗口位置").clicked() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
-                        100.0, 100.0,
-                    )));
-                    ui.close();
-                }
-                if ui.button("退出").clicked() {
-                    self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-            });
         });
         let width = if self.page == Page::Monitor {
-            354.0
+            if self.settings.view == "ring" { (self.settings.accounts.iter().filter(|a| a.visible).count().clamp(1, 3) * 92 + 8) as f32 } else { 240.0 }
         } else {
             470.0
         };
@@ -1079,11 +976,11 @@ impl eframe::App for App {
             Page::Settings => 680.0,
             Page::Accounts => 460.0,
             Page::Detail(_) => 700.0,
-            Page::Monitor if count == 0 => 230.0,
-            Page::Monitor if self.settings.view == "ring" => (count.div_ceil(3) * 150 + 116) as f32,
-            Page::Monitor => (count * 80 + 116) as f32,
+            Page::Monitor if count == 0 => 36.0,
+            Page::Monitor if self.settings.view == "ring" => (count.div_ceil(3) * 130 + 8) as f32,
+            Page::Monitor => (count * 62 + 8) as f32,
         };
-        let size = Vec2::new(width, height.clamp(140.0, 700.0));
+        let size = Vec2::new(width, height.clamp(36.0, 700.0));
         if (size - self.last_size).length() > 1.0 {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
             self.last_size = size;
@@ -1102,3 +999,4 @@ impl eframe::App for App {
         self.workers.clear();
     }
 }
+

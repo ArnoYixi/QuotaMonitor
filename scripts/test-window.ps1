@@ -145,7 +145,7 @@ try {
     [DesktopProbe]::SetForegroundWindow($hwnd) | Out-Null
     [DesktopProbe]::SetWindowPos($backdrop.Handle,[IntPtr](-1),$side.L,$side.T,($side.R-$side.L),($side.B-$side.T),0x10) | Out-Null
     [DesktopProbe]::SetWindowPos($hwnd,[IntPtr](-1),0,0,0,0,0x13) | Out-Null
-    Start-Sleep -Seconds 3
+    for ($paint=0; $paint -lt 30; $paint++) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }
     $dark=New-Object System.Drawing.Bitmap(($side.R-$side.L),($side.B-$side.T))
     $g=[System.Drawing.Graphics]::FromImage($dark)
     $g.CopyFromScreen($side.L,$side.T,0,0,$dark.Size)
@@ -155,7 +155,7 @@ try {
     [System.Windows.Forms.Application]::DoEvents()
     [DesktopProbe]::SetWindowPos($backdrop.Handle,[IntPtr](-1),$side.L,$side.T,($side.R-$side.L),($side.B-$side.T),0x10) | Out-Null
     [DesktopProbe]::SetWindowPos($hwnd,[IntPtr](-1),0,0,0,0,0x13) | Out-Null
-    Start-Sleep -Seconds 3
+    for ($paint=0; $paint -lt 30; $paint++) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }
     $light=New-Object System.Drawing.Bitmap($dark.Width,$dark.Height)
     $g=[System.Drawing.Graphics]::FromImage($light)
     $g.CopyFromScreen($side.L,$side.T,0,0,$light.Size)

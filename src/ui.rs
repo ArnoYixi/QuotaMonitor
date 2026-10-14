@@ -373,8 +373,11 @@ impl App {
             self.page = Page::Settings;
         }
         // Start on the press frame: waiting for the drag threshold is too late on Windows.
-        if !self.settings.lock_position && r.is_pointer_button_down_on()
-            && r.ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary)) {
+        if !self.settings.lock_position
+            && r.is_pointer_button_down_on()
+            && r.ctx
+                .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
+        {
             r.ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
         }
     }
@@ -393,7 +396,10 @@ impl App {
             let resp = ui.add(
                 egui::Label::new(RichText::new(label).strong().size(14.0)).sense(Sense::drag()),
             );
-            if resp.is_pointer_button_down_on() && ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary)) && !self.settings.lock_position {
+            if resp.is_pointer_button_down_on()
+                && ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
+                && !self.settings.lock_position
+            {
                 ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -441,7 +447,8 @@ impl App {
     fn progress(ui: &mut egui::Ui, p: Option<f64>, ring: bool, stale: bool) -> egui::Response {
         let width = if ring { 74.0 } else { ui.available_width() };
         let height = if ring { 74.0 } else { 8.0 };
-        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
+        let (rect, response) =
+            ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
         let painter = ui.painter_at(rect);
         let track = if p == Some(0.0) && !stale {
             if ui.visuals().dark_mode {
@@ -504,7 +511,13 @@ impl App {
     }
     fn monitor(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-        let accounts: Vec<_> = self.settings.accounts.iter().filter(|a| a.visible).cloned().collect();
+        let accounts: Vec<_> = self
+            .settings
+            .accounts
+            .iter()
+            .filter(|a| a.visible)
+            .cloned()
+            .collect();
         if accounts.is_empty() {
             let r = ui.add(egui::Label::new("右键添加账号").sense(Sense::click_and_drag()));
             self.overlay_interaction(&r, None);
@@ -519,40 +532,78 @@ impl App {
                 });
             }
         } else {
-            for a in &accounts { self.account_widget(ui, a, false); }
+            for a in &accounts {
+                self.account_widget(ui, a, false);
+            }
         }
     }
     fn account_widget(&mut self, ui: &mut egui::Ui, a: &AccountConfig, ring: bool) {
-        let s = self.states.get(&a.id).cloned()
+        let s = self
+            .states
+            .get(&a.id)
+            .cloned()
             .unwrap_or_else(|| ViewState::new(a.id.clone(), a.cached.clone()));
         let q = s.quota.as_ref();
         let p = q.and_then(Quota::tightest).map(|(_, w)| w.remaining());
-        let stale = s.status != Status::Ready || q.is_none_or(|q| q.stale(now(), self.settings.interval));
-        let color = if stale { Color32::GRAY } else {
+        let stale =
+            s.status != Status::Ready || q.is_none_or(|q| q.stale(now(), self.settings.interval));
+        let color = if stale {
+            Color32::GRAY
+        } else {
             let [r, g, b] = quota_color(p.unwrap_or(0.0));
             Color32::from_rgb(r, g, b)
         };
-        let alias = if self.demo { format!("{} · 演示", a.alias) } else { a.alias.clone() };
+        let alias = if self.demo {
+            format!("{} · 演示", a.alias)
+        } else {
+            a.alias.clone()
+        };
         if ring {
-            let r = ui.add(egui::Label::new(&alias).truncate().sense(Sense::click_and_drag()));
+            let r = ui.add(
+                egui::Label::new(&alias)
+                    .truncate()
+                    .sense(Sense::click_and_drag()),
+            );
             self.overlay_interaction(&r, Some(&a.id));
         } else {
             ui.horizontal(|ui| {
-                let r = ui.add(egui::Label::new(&alias).truncate().sense(Sense::click_and_drag()));
+                let r = ui.add(
+                    egui::Label::new(&alias)
+                        .truncate()
+                        .sense(Sense::click_and_drag()),
+                );
                 self.overlay_interaction(&r, Some(&a.id));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.add(egui::Label::new(RichText::new(p.map(remaining_text).unwrap_or("—".into())).color(color)).sense(Sense::click_and_drag()));
+                    let r = ui.add(
+                        egui::Label::new(
+                            RichText::new(p.map(remaining_text).unwrap_or("—".into())).color(color),
+                        )
+                        .sense(Sense::click_and_drag()),
+                    );
                     self.overlay_interaction(&r, Some(&a.id));
                 });
             });
         }
         let r = Self::progress(ui, p, ring, stale);
         self.overlay_interaction(&r, Some(&a.id));
-        let can = q.is_some_and(|q| q.choose_card(now()).is_ok()) && s.status == Status::Ready && !stale;
+        let can =
+            q.is_some_and(|q| q.choose_card(now()).is_ok()) && s.status == Status::Ready && !stale;
         if can || s.pending || s.status == Status::Resetting {
-            if ui.add_enabled(s.status != Status::Resetting && s.status != Status::Paused,
-                egui::Button::new(if s.status == Status::Resetting { "处理中" } else if s.pending { "核对重置" } else { "重置" }).frame(false))
-                .on_hover_text("使用最早到期的 1 张重置卡").clicked() {
+            if ui
+                .add_enabled(
+                    s.status != Status::Resetting && s.status != Status::Paused,
+                    egui::Button::new(if s.status == Status::Resetting {
+                        "处理中"
+                    } else if s.pending {
+                        "核对重置"
+                    } else {
+                        "重置"
+                    })
+                    .frame(false),
+                )
+                .on_hover_text("使用最早到期的 1 张重置卡")
+                .clicked()
+            {
                 self.send(&a.id, Command::Reset);
             }
         }
@@ -780,10 +831,16 @@ impl App {
     fn settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         ui.label(RichText::new("设置").size(18.0).strong());
         if let Some(id) = self.context_account.clone() {
-            if ui.button("此账号详情").clicked() { self.page = Page::Detail(id); }
+            if ui.button("此账号详情").clicked() {
+                self.page = Page::Detail(id);
+            }
         }
-        if ui.button("刷新全部").clicked() { self.refresh_all(); }
-        if ui.button("添加账号").clicked() { self.add(ctx); }
+        if ui.button("刷新全部").clicked() {
+            self.refresh_all();
+        }
+        if ui.button("添加账号").clicked() {
+            self.add(ctx);
+        }
 
         let before = self.settings.clone();
         ui.horizontal(|ui| {
@@ -903,7 +960,9 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.events(ctx);
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) { self.page = Page::Monitor; }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.page = Page::Monitor;
+        }
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.tray_available {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
@@ -927,22 +986,32 @@ impl eframe::App for App {
         } else {
             Color32::from_rgba_unmultiplied(26, 32, 36, (255.0 * self.settings.opacity) as u8)
         };
-        let frame = if self.page == Page::Monitor { egui::Frame::NONE.inner_margin(4) } else { egui::Frame::new()
-            .fill(fill)
-            .corner_radius(12)
-            .inner_margin(12)
-            .stroke(Stroke::new(
-                1.0_f32,
-                if self.settings.light_theme {
-                    Color32::from_rgb(206, 218, 214)
-                } else {
-                    Color32::from_rgb(61, 75, 75)
-                },
-            )) };
+        let frame = if self.page == Page::Monitor {
+            egui::Frame::NONE.inner_margin(4)
+        } else {
+            egui::Frame::new()
+                .fill(fill)
+                .corner_radius(12)
+                .inner_margin(12)
+                .stroke(Stroke::new(
+                    1.0_f32,
+                    if self.settings.light_theme {
+                        Color32::from_rgb(206, 218, 214)
+                    } else {
+                        Color32::from_rgb(61, 75, 75)
+                    },
+                ))
+        };
         egui::CentralPanel::default().frame(frame).show(ctx, |ui| {
-            let background = ui.interact(ui.max_rect(), ui.id().with("context"), Sense::click_and_drag());
+            let background = ui.interact(
+                ui.max_rect(),
+                ui.id().with("context"),
+                Sense::click_and_drag(),
+            );
             self.overlay_interaction(&background, None);
-            if self.page != Page::Monitor { self.header(ui, ctx); }
+            if self.page != Page::Monitor {
+                self.header(ui, ctx);
+            }
             match self.page.clone() {
                 Page::Monitor => {
                     egui::ScrollArea::vertical()
@@ -967,7 +1036,19 @@ impl eframe::App for App {
             }
         });
         let width = if self.page == Page::Monitor {
-            if self.settings.view == "ring" { (self.settings.accounts.iter().filter(|a| a.visible).count().clamp(1, 3) * 92 + 8) as f32 } else { 240.0 }
+            if self.settings.view == "ring" {
+                (self
+                    .settings
+                    .accounts
+                    .iter()
+                    .filter(|a| a.visible)
+                    .count()
+                    .clamp(1, 3)
+                    * 92
+                    + 8) as f32
+            } else {
+                240.0
+            }
         } else {
             470.0
         };
@@ -999,4 +1080,3 @@ impl eframe::App for App {
         self.workers.clear();
     }
 }
-

@@ -102,4 +102,3 @@ fn run() -> Result<(), String> {
     )
     .map_err(|e| e.to_string())
 }
-

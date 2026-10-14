@@ -483,39 +483,53 @@ pub fn resize_overlay(
     let _ = (edge, geometry);
 }
 
-// Sample only a few transparent pixels adjacent to the text, locally. Never
-// capture, store or transmit a screenshot. The outline covers mixed backgrounds.
+// Sampling a desktop DC can synchronize with the compositor. Cache each
+// label's single transparent sample for one second; never sample every frame.
+#[cfg(windows)]
+thread_local! {
+    static TEXT_COLORS: std::cell::RefCell<std::collections::HashMap<[i32; 2], (std::time::Instant, egui::Color32)>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
 pub fn text_color(ctx: &egui::Context, rect: egui::Rect) -> egui::Color32 {
     #[cfg(windows)]
     unsafe {
         use windows_sys::Win32::{Foundation::POINT, Graphics::Gdi::*};
+        let scale = ctx.pixels_per_point();
+        let key = [
+            (rect.center().x * scale) as i32,
+            ((rect.top() - 2.0) * scale) as i32,
+        ];
+        if let Some(color) = TEXT_COLORS.with_borrow(|cache| {
+            cache
+                .get(&key)
+                .filter(|(time, _)| time.elapsed().as_secs_f32() < 1.0)
+                .map(|(_, color)| *color)
+        }) {
+            return color;
+        }
         let hwnd = main_window();
         if !hwnd.is_null() {
             let dc = GetDC(std::ptr::null_mut());
             if !dc.is_null() {
-                let scale = ctx.pixels_per_point();
                 let mut origin = POINT { x: 0, y: 0 };
                 ClientToScreen(hwnd, &mut origin);
-                let mut sum = 0.0;
-                let mut count = 0;
-                for t in [0.0, 0.25, 0.5, 0.75, 1.0] {
-                    let x = origin.x + ((rect.left() + rect.width() * t) * scale) as i32;
-                    let y = origin.y + ((rect.top() - 2.0) * scale) as i32;
-                    let c = GetPixel(dc, x, y);
-                    if c != 0xffffffff {
-                        sum += (c & 255) as f32 * 0.2126
-                            + ((c >> 8) & 255) as f32 * 0.7152
-                            + ((c >> 16) & 255) as f32 * 0.0722;
-                        count += 1;
-                    }
-                }
+                let c = GetPixel(dc, origin.x + key[0], origin.y + key[1]);
                 ReleaseDC(std::ptr::null_mut(), dc);
-                if count > 0 {
-                    return if sum / count as f32 > 150.0 {
+                if c != 0xffffffff {
+                    let luminance = (c & 255) as f32 * 0.2126
+                        + ((c >> 8) & 255) as f32 * 0.7152
+                        + ((c >> 16) & 255) as f32 * 0.0722;
+                    let color = if luminance > 150.0 {
                         egui::Color32::BLACK
                     } else {
                         egui::Color32::WHITE
                     };
+                    TEXT_COLORS.with_borrow_mut(|cache| {
+                        if cache.len() > 256 {
+                            cache.clear();
+                        }
+                        cache.insert(key, (std::time::Instant::now(), color));
+                    });
+                    return color;
                 }
             }
         }
@@ -527,6 +541,7 @@ pub fn text_color(ctx: &egui::Context, rect: egui::Rect) -> egui::Color32 {
         egui::Color32::BLACK
     }
 }
+
 impl Tray {
     pub fn start(tx: Sender<TrayAction>, ctx: egui::Context) -> Self {
         #[cfg(windows)]

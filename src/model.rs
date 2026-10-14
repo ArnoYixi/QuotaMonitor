@@ -203,10 +203,11 @@ impl Quota {
 /// Continuous RGB interpolation through red → orange → yellow → green.
 pub fn quota_color(percent: f64) -> [u8; 3] {
     let stops = [
-        (0.0, [233.0, 72.0, 77.0]),
-        (20.0, [239.0, 138.0, 48.0]),
-        (50.0, [213.0, 181.0, 43.0]),
-        (100.0, [47.0, 182.0, 135.0]),
+        (0.0, [255.0, 48.0, 64.0]),
+        (20.0, [255.0, 128.0, 24.0]),
+        (45.0, [255.0, 220.0, 0.0]),
+        (70.0, [80.0, 240.0, 32.0]),
+        (100.0, [0.0, 235.0, 128.0]),
     ];
     let p = if percent.is_finite() {
         percent.clamp(0.0, 100.0)
@@ -221,7 +222,7 @@ pub fn quota_color(percent: f64) -> [u8; 3] {
             });
         }
     }
-    [47, 182, 135]
+    [0, 235, 128]
 }
 pub fn remaining_text(p: f64) -> String {
     if p > 0.0 && p < 1.0 {

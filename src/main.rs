@@ -77,6 +77,7 @@ fn run() -> Result<(), String> {
         .with_decorations(false)
         .with_transparent(true)
         .with_has_shadow(false)
+        .with_taskbar(false)
         .with_resizable(false)
         .with_inner_size([360.0, 220.0])
         .with_always_on_top()

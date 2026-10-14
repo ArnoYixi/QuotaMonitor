@@ -1,5 +1,5 @@
 use crate::platform::{self, Tray, TrayAction};
-use eframe::egui::{self, Align2, Color32, FontId, RichText, Sense, Stroke, Vec2};
+use eframe::egui::{self, Color32, FontId, RichText, Sense, Stroke, Vec2};
 use quotamonitori::{
     engine::{self, Command, Event, Status, ViewState, Worker},
     model::{Quota, now, quota_color, remaining_text, time_label},
@@ -49,6 +49,8 @@ pub struct App {
     last_size: Vec2,
     need_login: Option<String>,
     context_account: Option<String>,
+    edge: platform::Edge,
+    columns: usize,
 }
 impl App {
     pub fn new(
@@ -125,6 +127,8 @@ impl App {
             last_size: Vec2::ZERO,
             need_login: None,
             context_account: None,
+            edge: platform::Edge::Free,
+            columns: 1,
         };
         app.apply_style(&cc.egui_ctx);
         app.save();
@@ -348,7 +352,11 @@ impl App {
         }
         while let Ok(action) = self.tray_rx.try_recv() {
             match action {
+                TrayAction::Hide => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                }
                 TrayAction::Show => {
+                    self.page = Page::Monitor;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -443,6 +451,44 @@ impl App {
         ui.add_space(4.0);
         ui.separator();
     }
+    fn paint_text(ui: &egui::Ui, pos: egui::Pos2, galley: Arc<egui::Galley>, sample: egui::Rect) {
+        let color = platform::text_color(ui.ctx(), sample);
+        let outline = if color == Color32::WHITE {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        };
+        for offset in [
+            Vec2::new(-1.0, 0.0),
+            Vec2::new(1.0, 0.0),
+            Vec2::new(0.0, -1.0),
+            Vec2::new(0.0, 1.0),
+        ] {
+            ui.painter()
+                .galley_with_override_text_color(pos + offset, galley.clone(), outline);
+        }
+        ui.painter()
+            .galley_with_override_text_color(pos, galley, color);
+    }
+    fn overlay_text(
+        ui: &mut egui::Ui,
+        text: String,
+        font_size: f32,
+        max_width: f32,
+    ) -> egui::Response {
+        let mut job = egui::text::LayoutJob::simple_singleline(
+            text,
+            FontId::proportional(font_size),
+            Color32::WHITE,
+        );
+        job.wrap.max_width = max_width;
+        job.wrap.max_rows = 1;
+        job.wrap.break_anywhere = true;
+        let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
+        let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::click_and_drag());
+        Self::paint_text(ui, rect.min, galley, rect);
+        response
+    }
     fn progress(ui: &mut egui::Ui, p: Option<f64>, ring: bool, stale: bool) -> egui::Response {
         let width = if ring { 74.0 } else { ui.available_width() };
         let height = if ring { 74.0 } else { 8.0 };
@@ -469,6 +515,7 @@ impl App {
         if ring {
             let center = rect.center();
             let radius = 31.0;
+            painter.circle_stroke(center, radius, Stroke::new(7.0_f32, Color32::BLACK));
             painter.circle_stroke(center, radius, Stroke::new(5.0_f32, track));
             if let Some(p) = p {
                 if p > 0.0 {
@@ -484,14 +531,15 @@ impl App {
                     painter.add(egui::Shape::line(pts, Stroke::new(5.0_f32, fill)));
                 }
             }
-            painter.text(
-                center,
-                Align2::CENTER_CENTER,
+            let galley = painter.layout_no_wrap(
                 p.map(remaining_text).unwrap_or("—".into()),
                 FontId::proportional(17.0),
-                fill,
+                Color32::WHITE,
             );
+            let pos = center - galley.size() * 0.5;
+            Self::paint_text(ui, pos, galley, rect);
         } else {
+            painter.rect_filled(rect.expand(1.0), 5.0, Color32::BLACK);
             painter.rect_filled(rect, 4.0, track);
             if let Some(p) = p {
                 if p > 0.0 {
@@ -518,24 +566,38 @@ impl App {
             .cloned()
             .collect();
         if accounts.is_empty() {
-            let r = ui.add(egui::Label::new("右键添加账号").sense(Sense::click_and_drag()));
+            let r = Self::overlay_text(ui, "右键添加账号".into(), 13.0, ui.available_width());
             self.overlay_interaction(&r, None);
-        } else if self.settings.view == "ring" {
-            for row in accounts.chunks(3) {
-                ui.horizontal(|ui| {
+        } else {
+            let ring = self.settings.view == "ring";
+            let width = if ring {
+                86.0
+            } else if self.columns > 1 {
+                174.0
+            } else {
+                232.0
+            };
+            for row in accounts.chunks(self.columns.max(1)) {
+                ui.horizontal_top(|ui| {
                     for a in row {
-                        ui.allocate_ui(Vec2::new(86.0, 100.0), |ui| {
-                            ui.vertical_centered(|ui| self.account_widget(ui, a, true));
-                        });
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(width, if ring { 104.0 } else { 50.0 }),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_width(width);
+                                if ring {
+                                    ui.vertical_centered(|ui| self.account_widget(ui, a, true));
+                                } else {
+                                    self.account_widget(ui, a, false);
+                                }
+                            },
+                        );
                     }
                 });
             }
-        } else {
-            for a in &accounts {
-                self.account_widget(ui, a, false);
-            }
         }
     }
+
     fn account_widget(&mut self, ui: &mut egui::Ui, a: &AccountConfig, ring: bool) {
         let s = self
             .states
@@ -546,38 +608,25 @@ impl App {
         let p = q.and_then(Quota::tightest).map(|(_, w)| w.remaining());
         let stale =
             s.status != Status::Ready || q.is_none_or(|q| q.stale(now(), self.settings.interval));
-        let color = if stale {
-            Color32::GRAY
-        } else {
-            let [r, g, b] = quota_color(p.unwrap_or(0.0));
-            Color32::from_rgb(r, g, b)
-        };
         let alias = if self.demo {
             format!("{} · 演示", a.alias)
         } else {
             a.alias.clone()
         };
         if ring {
-            let r = ui.add(
-                egui::Label::new(&alias)
-                    .truncate()
-                    .sense(Sense::click_and_drag()),
-            );
+            let r = Self::overlay_text(ui, alias, 13.0, ui.available_width());
             self.overlay_interaction(&r, Some(&a.id));
         } else {
             ui.horizontal(|ui| {
-                let r = ui.add(
-                    egui::Label::new(&alias)
-                        .truncate()
-                        .sense(Sense::click_and_drag()),
-                );
+                let r =
+                    Self::overlay_text(ui, alias, 13.0, (ui.available_width() - 52.0).max(20.0));
                 self.overlay_interaction(&r, Some(&a.id));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = ui.add(
-                        egui::Label::new(
-                            RichText::new(p.map(remaining_text).unwrap_or("—".into())).color(color),
-                        )
-                        .sense(Sense::click_and_drag()),
+                    let r = Self::overlay_text(
+                        ui,
+                        p.map(remaining_text).unwrap_or("—".into()),
+                        13.0,
+                        48.0,
                     );
                     self.overlay_interaction(&r, Some(&a.id));
                 });
@@ -959,6 +1008,31 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.events(ctx);
+        let geometry = platform::desktop_geometry(ctx);
+        let count = self.settings.accounts.iter().filter(|a| a.visible).count();
+        let scale = ctx.pixels_per_point();
+        if self.page == Page::Monitor {
+            if let Some(g) = geometry.as_ref().filter(|g| !g.dragging) {
+                self.edge = g.edge(scale);
+            }
+            self.columns = match self.edge {
+                platform::Edge::Top | platform::Edge::Bottom => {
+                    let cell = if self.settings.view == "ring" {
+                        92.0
+                    } else {
+                        180.0
+                    };
+                    let fit = geometry
+                        .as_ref()
+                        .map(|g| ((g.work.width() / scale - 8.0) / cell).floor() as usize)
+                        .unwrap_or(3);
+                    count.max(1).min(fit.max(1))
+                }
+                platform::Edge::Left | platform::Edge::Right => 1,
+                platform::Edge::Free if self.settings.view == "ring" => count.clamp(1, 3),
+                _ => 1,
+            };
+        }
         // Handle the native press independently of widget click ownership. A system
         // window drag may consume the preceding release event on Windows.
         let show_settings = self.page == Page::Monitor
@@ -1044,42 +1118,43 @@ impl eframe::App for App {
         if show_settings {
             self.page = Page::Settings;
         }
-        let width = if self.page == Page::Monitor {
-            if self.settings.view == "ring" {
-                (self
-                    .settings
-                    .accounts
-                    .iter()
-                    .filter(|a| a.visible)
-                    .count()
-                    .clamp(1, 3)
-                    * 92
-                    + 8) as f32
-            } else {
-                240.0
-            }
-        } else {
+        let ring = self.settings.view == "ring";
+        let rows = count.div_ceil(self.columns.max(1));
+        let width = if self.page != Page::Monitor {
             470.0
+        } else if ring {
+            (self.columns * 92 + 2) as f32
+        } else if self.columns > 1 {
+            (self.columns * 180 + 2) as f32
+        } else {
+            240.0
         };
-        let count = self.settings.accounts.iter().filter(|a| a.visible).count();
         let height = match self.page {
             Page::Settings => 680.0,
             Page::Accounts => 460.0,
             Page::Detail(_) => 700.0,
             Page::Monitor if count == 0 => 36.0,
-            Page::Monitor if self.settings.view == "ring" => (count.div_ceil(3) * 130 + 8) as f32,
-            Page::Monitor => (count * 62 + 8) as f32,
+            Page::Monitor if ring => (rows * 130 + 8) as f32,
+            Page::Monitor => (rows * 56 + 8) as f32,
         };
-        let size = Vec2::new(width, height.clamp(36.0, 700.0));
-        if (size - self.last_size).length() > 1.0 {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+        let available = geometry
+            .as_ref()
+            .map(|g| g.work.size() / scale)
+            .unwrap_or(Vec2::new(1920.0, 1080.0));
+        let size = Vec2::new(
+            width.min(available.x),
+            height.clamp(36.0, 700.0).min(available.y),
+        );
+        if (size - self.last_size).length() > 1.0 && geometry.as_ref().is_none_or(|g| !g.dragging) {
+            platform::resize_overlay(ctx, size, self.edge, geometry.as_ref());
             self.last_size = size;
+            ctx.request_repaint();
         }
         if self.dirty && self.last_save.elapsed() > Duration::from_secs(2) {
             self.save();
         }
         // Recheck freshness and persistence without a continuous rendering loop.
-        ctx.request_repaint_after(Duration::from_secs(if self.dirty { 2 } else { 10 }));
+        ctx.request_repaint_after(Duration::from_secs(1));
     }
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0; 4]

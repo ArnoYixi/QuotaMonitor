@@ -1162,7 +1162,9 @@ impl eframe::App for App {
             width.min(available.x),
             height.clamp(36.0, 700.0).min(available.y),
         );
-        if (size - self.last_size).length() > 1.0 && geometry.as_ref().is_none_or(|g| !g.dragging) {
+        let size_changed = (size - self.last_size).length() > 1.0;
+        let needs_recovery = geometry.as_ref().is_some_and(|g| g.needs_recovery());
+        if (size_changed || needs_recovery) && geometry.as_ref().is_none_or(|g| !g.dragging) {
             platform::resize_overlay(ctx, size, self.edge, geometry.as_ref());
             self.last_size = size;
             ctx.request_repaint();
@@ -1182,3 +1184,4 @@ impl eframe::App for App {
         self.workers.clear();
     }
 }
+

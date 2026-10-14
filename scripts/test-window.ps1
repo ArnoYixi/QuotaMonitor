@@ -64,6 +64,14 @@ function TrayMenu([int]$index) {
     Start-Sleep -Milliseconds 1400
 }
 function Rect { $r=New-Object DesktopProbe+Rect; [DesktopProbe]::GetWindowRect($script:hwnd,[ref]$r) | Out-Null; return $r }
+function Assert-Visible([string]$scenario) {
+    $r=Rect
+    Write-Host "$scenario : $($r.L),$($r.T) - $($r.R),$($r.B)"
+    if ($r.L -lt $work.L -or $r.T -lt $work.T -or $r.R -gt $work.R -or $r.B -gt $work.B) {
+        throw "$scenario left the window outside the work area"
+    }
+    return $r
+}
 $data = Join-Path $env:RUNNER_TEMP ('quota-ui-' + [guid]::NewGuid())
 $exe = if ($env:QUOTA_GUI_EXE) { $env:QUOTA_GUI_EXE } else { 'dist/QuotaMonitori.exe' }
 $p = Start-Process -FilePath $exe -ArgumentList @('--demo', '--data-dir', $data, '--view', 'bar') -PassThru
@@ -120,6 +128,35 @@ try {
     Start-Sleep -Seconds 2
     $top=Rect
     if (($top.R-$top.L) -lt 450*$scale -or ($top.B-$top.T) -gt 150*$scale) { throw 'Top edge did not switch to a horizontal row' }
+    # Reproduce the reported regression after horizontal layout has settled:
+    # neither width nor height changes when the top crosses the work area.
+    foreach ($overshoot in @(12,96)) {
+        [DesktopProbe]::SetWindowPos($hwnd,[IntPtr]::Zero,$top.L,($work.T-[int]($overshoot*$scale)),0,0,0x15) | Out-Null
+        Start-Sleep -Seconds 2
+        $recovered=Assert-Visible "Top overshoot $overshoot"
+        if (($recovered.R-$recovered.L) -ne ($top.R-$top.L) -or ($recovered.B-$recovered.T) -ne ($top.B-$top.T)) {
+            throw 'Top recovery changed the settled horizontal layout'
+        }
+    }
+    # Exercise a real captured drag to the top, followed by mouse release.
+    $r=Rect
+    $dragX=$r.L+[int](30*$scale); $dragY=$r.T+[int](30*$scale)
+    [DesktopProbe]::SetCursorPos($dragX,$dragY) | Out-Null
+    Start-Sleep -Milliseconds 150
+    [DesktopProbe]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
+    Start-Sleep -Milliseconds 250
+    [DesktopProbe]::SetCursorPos($dragX,$work.T) | Out-Null
+    Start-Sleep -Milliseconds 250
+    [DesktopProbe]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
+    Start-Sleep -Seconds 2
+    $recovered=Assert-Visible 'Top drag release'
+    if (($recovered.R-$recovered.L) -ne ($top.R-$top.L)) { throw 'Top drag lost horizontal layout' }
+    foreach ($cornerX in @($work.L-20,$work.R-20)) {
+        [DesktopProbe]::SetWindowPos($hwnd,[IntPtr]::Zero,$cornerX,($work.T-12),0,0,0x15) | Out-Null
+        Start-Sleep -Seconds 2
+        $null=Assert-Visible 'Top corner recovery'
+    }
+    @{ top_overshoot_same_size=$true; deep_top_overshoot=$true; top_drag_release=$true; top_corners=$true } | ConvertTo-Json | Set-Content dist/boundary-test.json
     [DesktopProbe]::SetWindowPos($hwnd,[IntPtr]::Zero,200,$work.B-($top.B-$top.T)-4,0,0,0x15) | Out-Null
     Start-Sleep -Seconds 2
     $bottom=Rect
@@ -202,3 +239,4 @@ try {
     [DesktopProbe]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
     if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
 }
+

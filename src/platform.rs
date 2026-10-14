@@ -236,22 +236,85 @@ pub struct DesktopGeometry {
     pub dragging: bool,
 }
 impl DesktopGeometry {
+    pub fn needs_recovery(&self) -> bool {
+        !self.dragging && !self.work.contains_rect(self.window)
+    }
+
     pub fn edge(&self, scale: f32) -> Edge {
         let gap = 40.0 * scale;
-        let top = (self.window.top() - self.work.top()).abs();
-        let bottom = (self.window.bottom() - self.work.bottom()).abs();
+        // Crossing an edge must keep that edge selected, even when the
+        // overshoot exceeds the docking threshold.
+        let top = (self.window.top() - self.work.top()).max(0.0);
+        let bottom = (self.work.bottom() - self.window.bottom()).max(0.0);
         if top.min(bottom) <= gap {
             if top <= bottom {
                 Edge::Top
             } else {
                 Edge::Bottom
             }
-        } else if (self.window.left() - self.work.left()).abs() <= gap {
+        } else if (self.window.left() - self.work.left()).max(0.0) <= gap {
             Edge::Left
-        } else if (self.window.right() - self.work.right()).abs() <= gap {
+        } else if (self.work.right() - self.window.right()).max(0.0) <= gap {
             Edge::Right
         } else {
             Edge::Free
+        }
+    }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    fn geometry(x: f32, y: f32) -> DesktopGeometry {
+        DesktopGeometry {
+            window: egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(542.0, 64.0)),
+            work: egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1920.0, 1040.0)),
+            dragging: false,
+        }
+    }
+
+    #[test]
+    fn unchanged_horizontal_window_recovers_after_top_overshoot() {
+        for y in [-1.0, -12.0, -96.0, -200.0] {
+            let g = geometry(200.0, y);
+            assert!(g.needs_recovery());
+            assert!(matches!(g.edge(1.0), Edge::Top));
+            assert!(matches!(g.edge(1.5), Edge::Top));
+        }
+        assert!(!geometry(200.0, 0.0).needs_recovery());
+        assert!(!geometry(200.0, 200.0).needs_recovery());
+    }
+
+    #[test]
+    fn recovery_waits_for_drag_release() {
+        let mut g = geometry(200.0, -12.0);
+        g.dragging = true;
+        assert!(!g.needs_recovery());
+        g.dragging = false;
+        assert!(g.needs_recovery());
+    }
+
+    #[test]
+    fn recovery_uses_work_area_including_negative_monitor_origins() {
+        let mut g = geometry(-1800.0, -100.0);
+        g.work = egui::Rect::from_min_max(egui::pos2(-1920.0, -200.0), egui::pos2(0.0, 840.0));
+        assert!(!g.needs_recovery());
+        g.window = g.window.translate(egui::vec2(0.0, -101.0));
+        assert!(g.needs_recovery());
+        assert!(matches!(g.edge(1.0), Edge::Top));
+    }
+
+    #[test]
+    fn other_edges_recover_without_a_size_change() {
+        for (x, y, edge) in [
+            (-100.0, 200.0, Edge::Left),
+            (1500.0, 200.0, Edge::Right),
+            (200.0, 1000.0, Edge::Bottom),
+        ] {
+            let g = geometry(x, y);
+            assert!(g.needs_recovery());
+            assert!(g.edge(1.0) == edge);
         }
     }
 }
@@ -649,3 +712,4 @@ pub fn show_error(message: &str) {
     #[cfg(not(windows))]
     eprintln!("QuotaMonitori: {message}");
 }
+

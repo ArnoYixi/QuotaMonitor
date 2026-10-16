@@ -586,14 +586,14 @@ impl App {
                 ui.horizontal_top(|ui| {
                     for a in row {
                         ui.allocate_ui_with_layout(
-                            Vec2::new(width, if ring { 122.0 } else { 50.0 }),
+                            Vec2::new(width, if ring { 122.0 } else { 56.0 }),
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
                                 ui.set_width(width);
-                                ui.set_min_height(if ring { 122.0 } else { 50.0 });
+                                ui.set_min_height(if ring { 122.0 } else { 56.0 });
                                 let rect = egui::Rect::from_min_size(
                                     ui.next_widget_position(),
-                                    Vec2::new(width, if ring { 122.0 } else { 50.0 }),
+                                    Vec2::new(width, if ring { 122.0 } else { 56.0 }),
                                 );
                                 Self::backdrop(
                                     ui,
@@ -1174,7 +1174,7 @@ impl eframe::App for App {
             Page::Detail(_) => 700.0,
             Page::Monitor if count == 0 => 36.0,
             Page::Monitor if ring => (rows * 130 + 8) as f32,
-            Page::Monitor => (rows * 56 + 8) as f32,
+            Page::Monitor => (rows * 62 + 8) as f32,
         };
         let available = geometry
             .as_ref()

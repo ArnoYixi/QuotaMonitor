@@ -122,6 +122,13 @@ foreach($view in @('bar','ring')) {
         [QuotaBackdrop]::Mode=1
         Start-Sleep -Seconds 3
         $light=Capture $r; $images+=,$light
+        $probeY=if($view -eq 'ring'){[int](116*$scale)}else{[int](46*$scale)}
+        $solidDark=$dark.GetPixel([int](24*$scale),$probeY)
+        $solidLight=$light.GetPixel([int](24*$scale),$probeY)
+        if($solidDark.R -gt 5 -or $solidDark.G -gt 5 -or $solidDark.B -gt 5 -or
+            $solidLight.R -lt 245 -or $solidLight.G -lt 245 -or $solidLight.B -lt 245) {
+            throw 'Solid background gained a tint; account regions may overlap'
+        }
         $outside=$light.GetPixel(2,2)
         if($outside.R -lt 245 -or $outside.G -lt 245 -or $outside.B -lt 245) {
             throw "White fixture is obscured: $outside"
@@ -144,7 +151,6 @@ foreach($view in @('bar','ring')) {
         [BackdropNative]::SetWindowPos([QuotaBackdrop]::Window,$hwnd,0,0,0,0,0x13) | Out-Null
         Start-Sleep -Seconds 3
         $busy=Capture $r; $images+=,$busy
-        $probeY=if($view -eq 'ring'){[int](116*$scale)}else{[int](46*$scale)}
         $end=if($view -eq 'ring'){[int](80*$scale)}else{[int](220*$scale)}
         $rawDetail=Contrast $raw $probeY ([int](12*$scale)) $end
         $busyDetail=Contrast $busy $probeY ([int](12*$scale)) $end

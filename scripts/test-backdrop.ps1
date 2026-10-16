@@ -1,10 +1,11 @@
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
-# Load the fixture's forwarded assemblies before collecting compiler references.
-$fixtureTypes=@([System.Windows.Forms.Form],[System.Drawing.Graphics],[System.Drawing.Color],
-    [System.ComponentModel.Component],[System.Threading.ManualResetEventSlim],[System.Threading.Thread])
-$references=@([AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { -not $_.IsDynamic -and $_.Location } | ForEach-Object { $_.Location })
+# Compile against PowerShell's BCL reference assemblies, plus the desktop UI
+# assemblies. Runtime type-forwarder assemblies alone are insufficient.
+$references=@((Get-ChildItem (Join-Path $PSHOME 'ref') -Filter '*.dll').FullName)
+$desktop=Split-Path ([System.Windows.Forms.Form].Assembly.Location)
+$references+=@(Get-ChildItem $desktop -File | Where-Object { $_.Name -match '^(System\.Windows\.Forms|System\.Drawing\.Common|System\.Private\.Windows|Accessibility).*\.dll$' } | ForEach-Object { $_.FullName })
 Add-Type -ReferencedAssemblies $references -TypeDefinition @'
 using System;
 using System.Drawing;

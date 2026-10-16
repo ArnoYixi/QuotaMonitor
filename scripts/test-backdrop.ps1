@@ -1,6 +1,9 @@
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+# Load the fixture's forwarded assemblies before collecting compiler references.
+$fixtureTypes=@([System.Windows.Forms.Form],[System.Drawing.Graphics],[System.Drawing.Color],
+    [System.ComponentModel.Component],[System.Threading.ManualResetEventSlim],[System.Threading.Thread])
 $references=@([AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { -not $_.IsDynamic -and $_.Location } | ForEach-Object { $_.Location })
 Add-Type -ReferencedAssemblies $references -TypeDefinition @'
 using System;
@@ -160,7 +163,7 @@ foreach($view in @('bar','ring')) {
         $results+=@{view=$view; text_inversion=$true; texture_reduction=$true; stable_tint=$true; returns_to_transparent=$true}
         $busy.Save((Join-Path $env:RUNNER_TEMP "quota-$view-busy.png"))
     } finally {
-        $qa=Join-Path $env:RUNNER_TEMP 'quota-backdrop-captures'
+        $qa=Join-Path $pwd 'dist/qa'
         New-Item -ItemType Directory -Force $qa | Out-Null
         for($i=0;$i -lt $images.Count;$i++) {$images[$i].Save((Join-Path $qa "$view-$i.png"))}
         foreach($b in $images) {$b.Dispose()}

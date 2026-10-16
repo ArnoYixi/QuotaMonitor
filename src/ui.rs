@@ -590,6 +590,7 @@ impl App {
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
                                 ui.set_width(width);
+                                ui.set_min_height(if ring { 122.0 } else { 50.0 });
                                 let rect = egui::Rect::from_min_size(
                                     ui.next_widget_position(),
                                     Vec2::new(width, if ring { 122.0 } else { 50.0 }),

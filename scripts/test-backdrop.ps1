@@ -27,6 +27,7 @@ public sealed class QuotaBackdrop : Form {
             form.Bounds=new Rectangle(x,y,w,h);
             form.TopMost=true;
             form.ShowInTaskbar=false;
+            form.DoubleBuffered=true;
             Window=form.Handle;
             var timer=new System.Windows.Forms.Timer();
             timer.Interval=100;
@@ -44,9 +45,11 @@ public sealed class QuotaBackdrop : Form {
     protected override void OnPaintBackground(PaintEventArgs e) {
         if(Mode==0) { e.Graphics.Clear(Color.Black); return; }
         if(Mode==1) { e.Graphics.Clear(Color.White); return; }
-        e.Graphics.Clear(Color.FromArgb(8,16,30));
-        for(int y=0;y<Height;y+=16) for(int x=0;x<Width;x+=16)
-            if(((x/16+y/16)&1)==0) e.Graphics.FillRectangle(Brushes.White,x,y,16,16);
+        // Paint both tile colors into a buffered surface. Clearing an occluded
+        // window then painting only white tiles can erase texture under tint.
+        using(var dark=new SolidBrush(Color.FromArgb(8,16,30)))
+            for(int y=0;y<Height;y+=16) for(int x=0;x<Width;x+=16)
+                e.Graphics.FillRectangle(((x/16+y/16)&1)==0 ? Brushes.White : dark,x,y,16,16);
     }
     public static void Stop() { var current=form; current.BeginInvoke(new Action(()=>current.Close())); }
 }

@@ -642,10 +642,10 @@ fn sample_gutter(ctx: &egui::Context, rect: egui::Rect) -> Option<Vec<[u8; 3]>> 
             return None;
         }
         let scale = ctx.pixels_per_point();
-        let left = (rect.left() * scale - 2.0).floor().max(0.0) as i32;
-        let top = (rect.top() * scale - 2.0).floor().max(0.0) as i32;
-        let right = ((rect.right() * scale + 1.0).ceil() as i32).min(client.right - 1);
-        let bottom = ((rect.bottom() * scale + 1.0).ceil() as i32).min(client.bottom - 1);
+        let left = ((rect.left() - 2.0) * scale).floor().max(0.0) as i32;
+        let top = ((rect.top() - 2.0) * scale).floor().max(0.0) as i32;
+        let right = (((rect.right() + 1.0) * scale).ceil() as i32).min(client.right - 1);
+        let bottom = (((rect.bottom() + 1.0) * scale).ceil() as i32).min(client.bottom - 1);
         let width = right - left + 1;
         let height = bottom - top + 1;
         if width < 4 || height < 4 {

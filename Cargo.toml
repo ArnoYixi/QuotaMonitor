@@ -1,6 +1,6 @@
 [package]
 name = "quotamonitori"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.88"
 description = "Minimal native multi-account Codex quota monitor"
@@ -42,5 +42,6 @@ panic = "abort"
 
 [build-dependencies]
 sha2 = "0.10"
+
 
 

@@ -458,8 +458,8 @@ impl App {
         ui.add_space(4.0);
         ui.separator();
     }
-    fn paint_text(ui: &egui::Ui, pos: egui::Pos2, galley: Arc<egui::Galley>, sample: egui::Rect) {
-        let color = platform::text_color(ui.ctx(), sample);
+    fn paint_text(ui: &egui::Ui, pos: egui::Pos2, galley: Arc<egui::Galley>) {
+        let color = ui.visuals().override_text_color.unwrap_or(Color32::WHITE);
         let outline = if color == Color32::WHITE {
             Color32::BLACK
         } else {
@@ -493,7 +493,7 @@ impl App {
         job.wrap.break_anywhere = true;
         let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
         let (rect, response) = ui.allocate_exact_size(galley.size(), Sense::click_and_drag());
-        Self::paint_text(ui, rect.min, galley, rect);
+        Self::paint_text(ui, rect.min, galley);
         response
     }
     fn progress(ui: &mut egui::Ui, p: Option<f64>, ring: bool, stale: bool) -> egui::Response {
@@ -540,7 +540,7 @@ impl App {
                 Color32::WHITE,
             );
             let pos = center - galley.size() * 0.5;
-            Self::paint_text(ui, pos, galley, rect);
+            Self::paint_text(ui, pos, galley);
         } else {
             painter.rect_filled(rect.expand(1.0), 5.0, Color32::BLACK);
             painter.rect_filled(rect, 4.0, track);
@@ -569,6 +569,8 @@ impl App {
             .cloned()
             .collect();
         if accounts.is_empty() {
+            let rect = egui::Rect::from_min_size(ui.next_widget_position(), Vec2::new(232.0, 24.0));
+            Self::backdrop(ui, rect, egui::Id::new("empty-monitor"));
             let r = Self::overlay_text(ui, "右键添加账号".into(), 13.0, ui.available_width());
             self.overlay_interaction(&r, None);
         } else {
@@ -584,10 +586,19 @@ impl App {
                 ui.horizontal_top(|ui| {
                     for a in row {
                         ui.allocate_ui_with_layout(
-                            Vec2::new(width, if ring { 104.0 } else { 50.0 }),
+                            Vec2::new(width, if ring { 122.0 } else { 50.0 }),
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
                                 ui.set_width(width);
+                                let rect = egui::Rect::from_min_size(
+                                    ui.next_widget_position(),
+                                    Vec2::new(width, if ring { 122.0 } else { 50.0 }),
+                                );
+                                Self::backdrop(
+                                    ui,
+                                    rect,
+                                    egui::Id::new(("account-backdrop", &a.id)),
+                                );
                                 if ring {
                                     ui.vertical_centered(|ui| self.account_widget(ui, a, true));
                                 } else {
@@ -598,6 +609,16 @@ impl App {
                     }
                 });
             }
+        }
+    }
+
+    fn backdrop(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id) {
+        let (text, fill) = platform::overlay_appearance(ui.ctx(), rect, id);
+        ui.visuals_mut().override_text_color = Some(text);
+        // Leave a transparent sampling gutter around each card. Its pixels
+        // never contain this tint, text, or progress graphics.
+        if fill.a() > 0 {
+            ui.painter().rect_filled(rect, 6.0, fill);
         }
     }
 
@@ -1184,4 +1205,5 @@ impl eframe::App for App {
         self.workers.clear();
     }
 }
+
 

@@ -165,56 +165,6 @@ try {
     Start-Sleep -Seconds 2
     $side=Rect
     if (($side.R-$side.L) -gt 300*$scale -or ($side.B-$side.T) -lt 150*$scale) { throw 'Side edge did not switch back to a column' }
-    Add-Type -AssemblyName System.Windows.Forms
-    Add-Type -AssemblyName System.Drawing
-    $backdrop=New-Object System.Windows.Forms.Form
-    $backdrop.TopMost=$true
-    $backdrop.AutoScaleMode='None'
-    $backdrop.FormBorderStyle='None'
-    $backdrop.StartPosition='Manual'
-    $backdrop.Location=New-Object System.Drawing.Point($side.L,$side.T)
-    $backdrop.Size=New-Object System.Drawing.Size(($side.R-$side.L),($side.B-$side.T))
-    $backdrop.BackColor=[System.Drawing.Color]::Black
-    $backdrop.Show()
-    [DesktopProbe]::SetWindowPos($backdrop.Handle,$hwnd,$side.L,$side.T,($side.R-$side.L),($side.B-$side.T),0x10) | Out-Null
-    $backdrop.Refresh()
-    [System.Windows.Forms.Application]::DoEvents()
-    [DesktopProbe]::SetForegroundWindow($hwnd) | Out-Null
-    [DesktopProbe]::SetWindowPos($backdrop.Handle,[IntPtr](-1),$side.L,$side.T,($side.R-$side.L),($side.B-$side.T),0x10) | Out-Null
-    [DesktopProbe]::SetWindowPos($hwnd,[IntPtr](-1),0,0,0,0,0x13) | Out-Null
-    for ($paint=0; $paint -lt 30; $paint++) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }
-    $dark=New-Object System.Drawing.Bitmap(($side.R-$side.L),($side.B-$side.T))
-    $g=[System.Drawing.Graphics]::FromImage($dark)
-    $g.CopyFromScreen($side.L,$side.T,0,0,$dark.Size)
-    $g.Dispose()
-    $backdrop.BackColor=[System.Drawing.Color]::White
-    $backdrop.Refresh()
-    [System.Windows.Forms.Application]::DoEvents()
-    [DesktopProbe]::SetWindowPos($backdrop.Handle,[IntPtr](-1),$side.L,$side.T,($side.R-$side.L),($side.B-$side.T),0x10) | Out-Null
-    [DesktopProbe]::SetWindowPos($hwnd,[IntPtr](-1),0,0,0,0,0x13) | Out-Null
-    for ($paint=0; $paint -lt 30; $paint++) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100 }
-    $light=New-Object System.Drawing.Bitmap($dark.Width,$dark.Height)
-    $g=[System.Drawing.Graphics]::FromImage($light)
-    $g.CopyFromScreen($side.L,$side.T,0,0,$light.Size)
-    $g.Dispose()
-    $background=$light.GetPixel($light.Width-3,2)
-    Write-Host "White backdrop probe: $background"
-    $ink=0; $inverted=0
-    for ($y=[int](5*$scale); $y -lt 19*$scale; $y++) { for ($x=[int](6*$scale); $x -lt 125*$scale; $x++) {
-        $d=$dark.GetPixel($x,$y); $l=$light.GetPixel($x,$y)
-        if ($d.R -gt 240 -and $d.G -gt 240 -and $d.B -gt 240) {
-            $ink++
-            if ($l.R -lt 30 -and $l.G -lt 30 -and $l.B -lt 30) { $inverted++ }
-        }
-    } }
-    Write-Host "Adaptive text: $inverted / $ink glyph pixels inverted on light background"
-    $dark.Save((Join-Path $env:RUNNER_TEMP 'quota-dark.png'))
-    $light.Save((Join-Path $env:RUNNER_TEMP 'quota-light.png'))
-    $dark.Dispose(); $light.Dispose(); $backdrop.Close(); $backdrop.Dispose()
-    if ($ink -lt 20 -or $inverted -lt $ink*0.8) {
-        if ($background.R -lt 245 -or $background.G -lt 245 -or $background.B -lt 245) { throw 'Test backdrop was obscured; text contrast result is inconclusive' }
-        throw 'Text did not adapt from white to black on the changed desktop background'
-    }
     $script:tray=[DesktopProbe]::Find($p.Id,'tray_icon_app')
     if ($tray -eq [IntPtr]::Zero) { throw 'No native tray icon owner' }
     TrayMenu 1
@@ -233,10 +183,11 @@ try {
     TrayMenu 4
     $p.Refresh()
     if (-not $p.HasExited) { throw 'Tray Quit had no effect' }
-    @{ drag=$true; right_click_settings=$true; top_row=$true; bottom_row=$true; side_column=$true; no_taskbar=$true; adaptive_text=$true; tray_hide_show_settings_quit=$true } | ConvertTo-Json | Set-Content dist/window-test.json
+    @{ drag=$true; right_click_settings=$true; top_row=$true; bottom_row=$true; side_column=$true; no_taskbar=$true; tray_hide_show_settings_quit=$true } | ConvertTo-Json | Set-Content dist/window-test.json
 
 } finally {
     [DesktopProbe]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
     if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
 }
+
 

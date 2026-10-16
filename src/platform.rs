@@ -546,62 +546,176 @@ pub fn resize_overlay(
     let _ = (edge, geometry);
 }
 
-// Sampling a desktop DC can synchronize with the compositor. Cache each
-// label's single transparent sample for one second; never sample every frame.
+// Sample only the transparent gutter around each widget, never its own tint.
+// One desktop blit per account/second avoids repeated compositor round trips.
+#[cfg(windows)]
+struct BackdropCache {
+    sampled: std::time::Instant,
+    frame: std::time::Instant,
+    style: quotamonitori::appearance::Appearance,
+    opacity: f32,
+}
 #[cfg(windows)]
 thread_local! {
-    static TEXT_COLORS: std::cell::RefCell<std::collections::HashMap<[i32; 2], (std::time::Instant, egui::Color32)>> = std::cell::RefCell::new(std::collections::HashMap::new());
+    static BACKDROPS: std::cell::RefCell<std::collections::HashMap<egui::Id, BackdropCache>> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
-pub fn text_color(ctx: &egui::Context, rect: egui::Rect) -> egui::Color32 {
+
+pub fn overlay_appearance(
+    ctx: &egui::Context,
+    rect: egui::Rect,
+    id: egui::Id,
+) -> (egui::Color32, egui::Color32) {
+    let fallback = quotamonitori::appearance::Appearance::fallback(!ctx.style().visuals.dark_mode);
     #[cfg(windows)]
+    {
+        return BACKDROPS.with_borrow_mut(|cache| {
+            if cache.len() > 128 {
+                cache.clear();
+            }
+            let now = std::time::Instant::now();
+            let entry = cache.entry(id).or_insert_with(|| BackdropCache {
+                sampled: now - std::time::Duration::from_secs(2),
+                frame: now,
+                style: fallback,
+                opacity: 0.0,
+            });
+            if now.duration_since(entry.sampled).as_secs_f32() >= 1.0 {
+                if let Some(samples) = sample_gutter(ctx, rect) {
+                    let style =
+                        quotamonitori::appearance::Appearance::from_samples(&samples, entry.style);
+                    if style.opacity != entry.style.opacity {
+                        entry.frame = now;
+                    }
+                    entry.style = style;
+                }
+                entry.sampled = now;
+            }
+            let target = f32::from(entry.style.opacity);
+            let step = (now.duration_since(entry.frame).as_secs_f32() / 0.18).clamp(0.0, 1.0);
+            entry.opacity += (target - entry.opacity) * step;
+            if (target - entry.opacity).abs() < 1.0 {
+                entry.opacity = target;
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            }
+            entry.frame = now;
+            let [r, g, b] = entry.style.tint();
+            (
+                if entry.style.dark_text {
+                    egui::Color32::BLACK
+                } else {
+                    egui::Color32::WHITE
+                },
+                egui::Color32::from_rgba_unmultiplied(r, g, b, entry.opacity.round() as u8),
+            )
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (rect, id);
+        (
+            if fallback.dark_text {
+                egui::Color32::BLACK
+            } else {
+                egui::Color32::WHITE
+            },
+            egui::Color32::TRANSPARENT,
+        )
+    }
+}
+
+#[cfg(windows)]
+fn sample_gutter(ctx: &egui::Context, rect: egui::Rect) -> Option<Vec<[u8; 3]>> {
+    use windows_sys::Win32::{
+        Foundation::{POINT, RECT},
+        Graphics::Gdi::*,
+        UI::WindowsAndMessaging::GetClientRect,
+    };
     unsafe {
-        use windows_sys::Win32::{Foundation::POINT, Graphics::Gdi::*};
-        let scale = ctx.pixels_per_point();
-        let key = [
-            (rect.center().x * scale) as i32,
-            ((rect.top() - 2.0) * scale) as i32,
-        ];
-        if let Some(color) = TEXT_COLORS.with_borrow(|cache| {
-            cache
-                .get(&key)
-                .filter(|(time, _)| time.elapsed().as_secs_f32() < 1.0)
-                .map(|(_, color)| *color)
-        }) {
-            return color;
-        }
         let hwnd = main_window();
-        if !hwnd.is_null() {
-            let dc = GetDC(std::ptr::null_mut());
-            if !dc.is_null() {
-                let mut origin = POINT { x: 0, y: 0 };
-                ClientToScreen(hwnd, &mut origin);
-                let c = GetPixel(dc, origin.x + key[0], origin.y + key[1]);
-                ReleaseDC(std::ptr::null_mut(), dc);
+        if hwnd.is_null() {
+            return None;
+        }
+        let mut origin = POINT { x: 0, y: 0 };
+        let mut client: RECT = std::mem::zeroed();
+        if ClientToScreen(hwnd, &mut origin) == 0 || GetClientRect(hwnd, &mut client) == 0 {
+            return None;
+        }
+        let scale = ctx.pixels_per_point();
+        let left = (rect.left() * scale - 2.0).floor().max(0.0) as i32;
+        let top = (rect.top() * scale - 2.0).floor().max(0.0) as i32;
+        let right = ((rect.right() * scale + 1.0).ceil() as i32).min(client.right - 1);
+        let bottom = ((rect.bottom() * scale + 1.0).ceil() as i32).min(client.bottom - 1);
+        let width = right - left + 1;
+        let height = bottom - top + 1;
+        if width < 4 || height < 4 {
+            return None;
+        }
+        // Do not sample a clipped edge inside the widget's painted area.
+        let top_clear = (top as f32) < rect.top() * scale - 0.5;
+        let bottom_clear = (bottom as f32) > rect.bottom() * scale + 0.5;
+        let left_clear = (left as f32) < rect.left() * scale - 0.5;
+        let right_clear = (right as f32) > rect.right() * scale + 0.5;
+        let screen = GetDC(std::ptr::null_mut());
+        if screen.is_null() {
+            return None;
+        }
+        let memory = CreateCompatibleDC(screen);
+        let bitmap = CreateCompatibleBitmap(screen, width, height);
+        if memory.is_null() || bitmap.is_null() {
+            if !bitmap.is_null() {
+                DeleteObject(bitmap);
+            }
+            if !memory.is_null() {
+                DeleteDC(memory);
+            }
+            ReleaseDC(std::ptr::null_mut(), screen);
+            return None;
+        }
+        let previous = SelectObject(memory, bitmap);
+        let copied = BitBlt(
+            memory,
+            0,
+            0,
+            width,
+            height,
+            screen,
+            origin.x + left,
+            origin.y + top,
+            SRCCOPY | CAPTUREBLT,
+        );
+        let mut pixels = Vec::with_capacity(80);
+        if copied != 0 {
+            let mut sample = |x, y| {
+                let c = GetPixel(memory, x, y);
                 if c != 0xffffffff {
-                    let luminance = (c & 255) as f32 * 0.2126
-                        + ((c >> 8) & 255) as f32 * 0.7152
-                        + ((c >> 16) & 255) as f32 * 0.0722;
-                    let color = if luminance > 150.0 {
-                        egui::Color32::BLACK
-                    } else {
-                        egui::Color32::WHITE
-                    };
-                    TEXT_COLORS.with_borrow_mut(|cache| {
-                        if cache.len() > 256 {
-                            cache.clear();
-                        }
-                        cache.insert(key, (std::time::Instant::now(), color));
-                    });
-                    return color;
+                    pixels.push([(c & 255) as u8, ((c >> 8) & 255) as u8, ((c >> 16) & 255) as u8]);
+                }
+            };
+            for i in 0..32 {
+                let x = (width - 1) * i / 31;
+                if top_clear {
+                    sample(x, 0);
+                }
+                if bottom_clear {
+                    sample(x, height - 1);
+                }
+            }
+            for i in 0..8 {
+                let y = (height - 1) * i / 7;
+                if left_clear {
+                    sample(0, y);
+                }
+                if right_clear {
+                    sample(width - 1, y);
                 }
             }
         }
-    }
-    let _ = rect;
-    if ctx.style().visuals.dark_mode {
-        egui::Color32::WHITE
-    } else {
-        egui::Color32::BLACK
+        SelectObject(memory, previous);
+        DeleteObject(bitmap);
+        DeleteDC(memory);
+        ReleaseDC(std::ptr::null_mut(), screen);
+        (pixels.len() >= 12).then_some(pixels)
     }
 }
 
@@ -712,4 +826,5 @@ pub fn show_error(message: &str) {
     #[cfg(not(windows))]
     eprintln!("QuotaMonitori: {message}");
 }
+
 

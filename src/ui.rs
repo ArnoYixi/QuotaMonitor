@@ -639,12 +639,14 @@ impl App {
     ) {
         let ring = self.settings.view == "ring";
         let font = FontId::proportional(13.0);
-        let mut header_height = ctx.fonts_mut(|fonts| {
-            fonts
-                .layout_no_wrap("Ag国".into(), font.clone(), Color32::WHITE)
-                .size()
-                .y
-        });
+        let mut header_height = ctx
+            .fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap("Ag国".into(), font.clone(), Color32::WHITE)
+                    .size()
+                    .y
+            })
+            .max(ctx.style().spacing.interact_size.y);
         let mut width = if ring { 96.0_f32 } else { 208.0_f32 };
         let mut count = 0;
         for account in self.settings.accounts.iter().filter(|a| a.visible) {
@@ -738,7 +740,7 @@ impl App {
                                 });
                                 let r = ui.interact(
                                     rect,
-                                    ui.id().with("overlay-drag"),
+                                    ui.id().with(("overlay-drag", &account.id)),
                                     Sense::click_and_drag(),
                                 );
                                 self.overlay_interaction(&r, Some(&account.id));
@@ -1343,5 +1345,183 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.save();
         self.workers.clear();
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    fn fixture(ctx: &egui::Context, view: &str) -> App {
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "cjk".into(),
+            egui::FontData::from_static(include_bytes!("../assets/NotoSansSC-Subset.otf")).into(),
+        );
+        fonts
+            .families
+            .get_mut(&egui::FontFamily::Proportional)
+            .unwrap()
+            .push("cjk".into());
+        ctx.set_fonts(fonts);
+        let settings = Settings {
+            view: view.into(),
+            accounts: ["主账号", "备用账号", "工作账号"]
+                .into_iter()
+                .map(|alias| AccountConfig {
+                    alias: alias.into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let states = settings
+            .accounts
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (a.id.clone(), engine::demo_state(&a.id, i)))
+            .collect();
+        let (events_tx, events_rx) = mpsc::channel();
+        let app = App {
+            dir: PathBuf::new(),
+            settings,
+            demo: true,
+            _lock: std::fs::File::open(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap(),
+            page: Page::Monitor,
+            states,
+            workers: HashMap::new(),
+            backend: None,
+            events_tx,
+            events_rx,
+            boot_rx: mpsc::channel().1,
+            tray_rx: mpsc::channel().1,
+            _tray: Tray::default(),
+            tray_available: false,
+            quitting: false,
+            notice: String::new(),
+            dirty: false,
+            last_save: Instant::now(),
+            last_demo_refresh: Instant::now(),
+            last_size: Vec2::ZERO,
+            need_login: None,
+            context_account: None,
+            edge: platform::Edge::Free,
+            columns: 1,
+            was_monitor: true,
+            monitor_rect: None,
+            card_size: Vec2::new(208.0, 43.0),
+            monitor_size: Vec2::new(216.0, 160.0),
+            context_open: false,
+        };
+        app.apply_style(ctx);
+        app
+    }
+
+    #[test]
+    fn painted_monitor_fits_padded_cards_without_text_outlines() {
+        for view in ["bar", "ring"] {
+            let ctx = egui::Context::default();
+            let mut app = fixture(&ctx, view);
+            let mut output = egui::FullOutput::default();
+            for _ in 0..3 {
+                output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            app.monitor_size,
+                        )),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        app.measure_monitor(ctx, None);
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::NONE.inner_margin(4))
+                            .show(ctx, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .max_height(620.0)
+                                    .show(ui, |ui| app.monitor(ui, ctx));
+                            });
+                    },
+                );
+            }
+            let cards: Vec<_> = (0..3)
+                .map(|i| {
+                    egui::Rect::from_min_size(
+                        egui::pos2(
+                            4.0 + (i % app.columns) as f32 * (app.card_size.x + 6.0),
+                            4.0 + (i / app.columns) as f32 * (app.card_size.y + 6.0),
+                        ),
+                        app.card_size,
+                    )
+                })
+                .collect();
+            let texts: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        Some(text)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(
+                texts.len(),
+                8,
+                "{view}: each title, nonzero suffix and percentage must be painted once: {:?}",
+                texts
+                    .iter()
+                    .map(|t| (&t.galley.job.text, t.pos))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                texts
+                    .iter()
+                    .filter(|t| t.galley.job.text.contains("重置卡"))
+                    .count(),
+                2
+            );
+            assert_eq!(
+                texts
+                    .iter()
+                    .filter(|t| t.galley.job.text.contains("积分"))
+                    .count(),
+                1
+            );
+            for text in texts {
+                let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
+                assert!(
+                    cards.iter().any(|card| card
+                        .shrink2(Vec2::new(8.0, 6.0))
+                        .expand(0.5)
+                        .contains_rect(bounds)),
+                    "{view}: text outside padded cards: {:?} at {bounds:?}; cards: {cards:?}",
+                    text.galley.job.text
+                );
+            }
+            if view == "bar" {
+                let tracks: Vec<_> = output
+                    .shapes
+                    .iter()
+                    .filter_map(|shape| match &shape.shape {
+                        egui::Shape::Rect(rect)
+                            if (rect.rect.height() - 8.0).abs() < 0.1
+                                && (rect.rect.width() - app.card_size.x + 16.0).abs() < 0.1 =>
+                        {
+                            Some(rect.rect)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(tracks.len(), 3);
+                for (track, card) in tracks.iter().zip(cards) {
+                    assert!(
+                        (card.bottom() - track.bottom() - 6.0).abs() < 0.5,
+                        "unexpected bottom padding: {track:?} in {card:?}"
+                    );
+                }
+            }
+        }
     }
 }

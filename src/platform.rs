@@ -1,9 +1,8 @@
 use eframe::egui;
 use std::{path::Path, sync::mpsc::Sender};
-use tray_icon::{
-    MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
-};
+#[cfg(not(windows))]
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 #[derive(Clone, Copy, Debug)]
 pub enum TrayAction {
@@ -15,6 +14,7 @@ pub enum TrayAction {
     Quit,
     Available(bool),
 }
+#[derive(Default)]
 pub struct Tray {
     #[cfg(windows)]
     _icon: Option<TrayIcon>,

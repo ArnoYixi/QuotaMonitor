@@ -46,6 +46,17 @@ pub struct CreditBalance {
     pub has_credits: bool,
     pub unlimited: bool,
 }
+impl CreditBalance {
+    pub fn rounded_balance(&self) -> Option<String> {
+        self.balance
+            .as_deref()?
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .map(|value| format!("{:.0}", value.ceil().max(0.0)))
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpendLimit {
@@ -173,18 +184,8 @@ impl Quota {
             if credits.unlimited {
                 text.push_str(" *不限积分");
             } else if credits.has_credits {
-                if let Some(balance) = credits.balance.as_deref().map(str::trim) {
-                    if balance
-                        .parse::<f64>()
-                        .is_ok_and(|value| value.is_finite() && value > 0.0)
-                    {
-                        let value = if balance.contains('.') && !balance.contains(['e', 'E']) {
-                            balance.trim_end_matches('0').trim_end_matches('.')
-                        } else {
-                            balance
-                        };
-                        text.push_str(&format!(" *{value}积分"));
-                    }
+                if let Some(value) = credits.rounded_balance().filter(|value| value != "0") {
+                    text.push_str(&format!(" *{value}积分"));
                 }
             }
         }
@@ -375,7 +376,7 @@ mod tests {
         )]));
         assert_eq!(quota.compact_suffix(), " *3重置卡 *200积分");
         quota.rate_limits.credits.as_mut().unwrap().balance = Some("0.0004".into());
-        assert_eq!(quota.compact_suffix(), " *3重置卡 *0.0004积分");
+        assert_eq!(quota.compact_suffix(), " *3重置卡 *1积分");
         quota.rate_limits.credits.as_mut().unwrap().has_credits = false;
         assert_eq!(quota.compact_suffix(), " *3重置卡");
     }
@@ -393,5 +394,32 @@ mod tests {
         };
         quota.rate_limits_by_limit_id = Some(BTreeMap::from([("codex".into(), bucket)]));
         assert_eq!(quota.compact_suffix(), " *不限积分");
+    }
+
+    #[test]
+    fn credit_balances_round_up_to_whole_points() {
+        for (raw, expected) in [
+            ("0", Some("0")),
+            ("-0.0", Some("0")),
+            ("0.0004", Some("1")),
+            ("1.2", Some("2")),
+            ("1.9", Some("2")),
+            ("200.000", Some("200")),
+            ("200.001", Some("201")),
+            (" 1.01e2 ", Some("101")),
+            ("4e-4", Some("1")),
+            ("-2", None),
+            ("NaN", None),
+            ("inf", None),
+            ("unknown", None),
+        ] {
+            let credits = CreditBalance {
+                balance: Some(raw.into()),
+                has_credits: true,
+                unlimited: false,
+            };
+            assert_eq!(credits.rounded_balance().as_deref(), expected, "{raw}");
+            assert_eq!(credits.balance.as_deref(), Some(raw));
+        }
     }
 }

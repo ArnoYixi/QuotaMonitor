@@ -129,7 +129,7 @@ fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, St
             } => Some(TrayAction::Show),
             TrayIconEvent::Click {
                 button: MouseButton::Right,
-                button_state: MouseButtonState::Down,
+                button_state: MouseButtonState::Up,
                 ..
             } => native_tray_menu(),
             _ => None,
@@ -234,27 +234,38 @@ fn native_tray_menu() -> Option<TrayAction> {
 
 #[cfg(windows)]
 fn native_popup(items: &[(usize, &str, bool)], tray_owner: bool) -> i32 {
-    use windows_sys::Win32::{
-        Foundation::*, System::Threading::GetCurrentProcessId, UI::WindowsAndMessaging::*,
-    };
-    unsafe extern "system" fn visit(hwnd: HWND, output: LPARAM) -> i32 {
-        unsafe {
-            let mut pid = 0;
-            GetWindowThreadProcessId(hwnd, &mut pid);
-            if pid == GetCurrentProcessId() {
-                let mut class = [0u16; 64];
-                let n = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
-                if String::from_utf16_lossy(&class[..n as usize]) == "tray_icon_app" {
-                    *(output as *mut HWND) = hwnd;
-                    return 0;
-                }
-            }
-            1
-        }
-    }
+    use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
     unsafe {
+        // Both the locked overlay and tray-icon's hidden HWND are layered,
+        // click-through windows. A popup needs an independently activatable
+        // owner so mouse/keyboard input works even while the overlay is locked
+        // or hidden. Never fall back to the locked overlay as the tray owner.
+        let owner = if tray_owner {
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW,
+                windows_sys::w!("STATIC"),
+                windows_sys::w!("QuotaMonitori tray menu"),
+                WS_POPUP,
+                0,
+                0,
+                0,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        } else {
+            main_window()
+        };
+        if owner.is_null() {
+            return 0;
+        }
         let menu = CreatePopupMenu();
         if menu.is_null() {
+            if tray_owner {
+                DestroyWindow(owner);
+            }
             return 0;
         }
         for &(id, label, enabled) in items {
@@ -266,12 +277,11 @@ fn native_popup(items: &[(usize, &str, bool)], tray_owner: bool) -> i32 {
                 AppendMenuW(menu, flags, id, text.as_ptr());
             }
         }
-        let mut owner = main_window();
-        if tray_owner {
-            EnumWindows(Some(visit), &mut owner as *mut HWND as isize);
-        }
         let mut point = POINT { x: 0, y: 0 };
         GetCursorPos(&mut point);
+        if tray_owner {
+            ShowWindow(owner, SW_SHOWNOACTIVATE);
+        }
         SetForegroundWindow(owner);
         let command = TrackPopupMenu(
             menu,
@@ -284,6 +294,9 @@ fn native_popup(items: &[(usize, &str, bool)], tray_owner: bool) -> i32 {
         );
         DestroyMenu(menu);
         PostMessageW(owner, WM_NULL, 0, 0);
+        if tray_owner {
+            DestroyWindow(owner);
+        }
         command
     }
 }
@@ -297,6 +310,109 @@ pub fn cancel_drag() {
             if GetCapture() == main_window() {
                 ReleaseCapture();
             }
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod popup_tests {
+    use super::*;
+    use std::cell::Cell;
+    use windows_sys::Win32::{
+        Foundation::*, System::Threading::GetCurrentThreadId, UI::WindowsAndMessaging::*,
+    };
+
+    thread_local! {
+        static TICKS: Cell<u32> = const { Cell::new(0) };
+        static INTERACTIVE_OWNER: Cell<bool> = const { Cell::new(false) };
+        static MENU_INPUT: Cell<char> = const { Cell::new('q') };
+        static OWNER: Cell<isize> = const { Cell::new(0) };
+    }
+
+    unsafe extern "system" fn choose_menu_item(_: HWND, _: u32, timer: usize, _: u32) {
+        unsafe {
+            let ticks = TICKS.get() + 1;
+            TICKS.set(ticks);
+            if ticks > 20 {
+                KillTimer(std::ptr::null_mut(), timer);
+                EndMenu();
+                return;
+            }
+            let mut info: GUITHREADINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<GUITHREADINFO>() as u32;
+            if GetGUIThreadInfo(GetCurrentThreadId(), &mut info) != 0
+                && !info.hwndMenuOwner.is_null()
+            {
+                let style = GetWindowLongPtrW(info.hwndMenuOwner, GWL_EXSTYLE);
+                OWNER.set(info.hwndMenuOwner as isize);
+                INTERACTIVE_OWNER.set(
+                    style & (WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE) as isize == 0,
+                );
+                // Exercise the real modal menu loop, targeting only this test's
+                // owner window rather than injecting input into the desktop.
+                if ticks == 1 {
+                    let key = MENU_INPUT.get();
+                    let message = if key == '\u{1b}' { WM_KEYDOWN } else { WM_CHAR };
+                    PostMessageW(info.hwndMenuOwner, message, key as usize, 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tray_popup_accepts_commands_with_a_hidden_click_through_overlay() {
+        unsafe {
+            let overlay = CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+                windows_sys::w!("STATIC"),
+                windows_sys::w!("QuotaMonitori · popup regression"),
+                WS_POPUP,
+                0,
+                0,
+                0,
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            assert!(!overlay.is_null());
+            let tray = TrayIconBuilder::new().build().unwrap();
+            let mut results = Vec::new();
+            for (key, expected) in [('u', 1), ('\u{1b}', 0), ('q', 2)] {
+                TICKS.set(0);
+                INTERACTIVE_OWNER.set(false);
+                OWNER.set(0);
+                MENU_INPUT.set(key);
+                let timer = SetTimer(std::ptr::null_mut(), 0, 100, Some(choose_menu_item));
+                assert_ne!(timer, 0);
+                let command = native_popup(&[(1, "&Unlock", true), (2, "&Quit", true)], true);
+                KillTimer(std::ptr::null_mut(), timer);
+                results.push((
+                    command,
+                    expected,
+                    INTERACTIVE_OWNER.get(),
+                    IsWindow(OWNER.get() as HWND) == 0,
+                ));
+            }
+            let still_locked = GetWindowLongPtrW(overlay, GWL_EXSTYLE)
+                & (WS_EX_LAYERED | WS_EX_TRANSPARENT) as isize
+                == (WS_EX_LAYERED | WS_EX_TRANSPARENT) as isize;
+            let still_hidden = IsWindowVisible(overlay) == 0;
+            DestroyWindow(overlay);
+            drop(tray);
+            for (command, expected, interactive, destroyed) in results {
+                assert_eq!(
+                    command, expected,
+                    "the popup must deliver its selected command"
+                );
+                assert!(interactive, "menu owner must accept input");
+                assert!(destroyed, "the temporary menu owner must be destroyed");
+            }
+            assert!(
+                still_locked && still_hidden,
+                "opening the menu must preserve the overlay"
+            );
         }
     }
 }

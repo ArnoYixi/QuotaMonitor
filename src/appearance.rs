@@ -86,13 +86,22 @@ mod tests {
         assert!(busy.opacity >= 130 && busy.opacity <= 148);
         let stable = Appearance::from_samples(&pixels, busy);
         assert_eq!(stable, busy);
-        assert_eq!(Appearance::from_samples(&[[8, 16, 30]; 64], busy).opacity, 0);
+        assert_eq!(
+            Appearance::from_samples(&[[8, 16, 30]; 64], busy).opacity,
+            0
+        );
     }
 
     #[test]
     fn similar_luminance_colors_still_need_a_backdrop() {
         let pixels: Vec<_> = (0..64)
-            .map(|i| if i % 2 == 0 { [220, 40, 40] } else { [0, 100, 0] })
+            .map(|i| {
+                if i % 2 == 0 {
+                    [220, 40, 40]
+                } else {
+                    [0, 100, 0]
+                }
+            })
             .collect();
         assert!(Appearance::from_samples(&pixels, Appearance::fallback(false)).opacity > 100);
     }

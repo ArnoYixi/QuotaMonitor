@@ -63,6 +63,9 @@ function Choose($menu,[string]$wanted) {
 function Tray([string]$wanted) {
     [BackdropNative]::SetCursorPos(650,450) | Out-Null
     [BackdropNative]::PostMessageW($script:tray,6002,[UIntPtr]::Zero,[IntPtr]0x204) | Out-Null
+    Start-Sleep -Milliseconds 100
+    if([BackdropNative]::FindClass($script:p.Id,'#32768') -ne [IntPtr]::Zero) {throw 'Tray menu opened before right-button release'}
+    [BackdropNative]::PostMessageW($script:tray,6002,[UIntPtr]::Zero,[IntPtr]0x205) | Out-Null
     $menu=Popup
     Choose $menu $wanted
 }
@@ -164,8 +167,21 @@ try {
     Assert-Locked $false
     Tray '锁定悬浮'
     Assert-Locked $true
+    Tray '隐藏悬浮窗'
+    if([BackdropNative]::IsWindowVisible($hwnd)) {throw 'Tray Hide failed while locked'}
+    Tray '显示悬浮窗'
+    if(-not [BackdropNative]::IsWindowVisible($hwnd)) {throw 'Tray Show failed while locked'}
+    Assert-Locked $true
+    Tray '打开菜单'
+    Assert-Locked $false
+    Tray '显示悬浮窗'
+    Assert-Locked $true
+    Tray '刷新全部'
+    Assert-Locked $true
+    Tray '隐藏悬浮窗'
+    if([BackdropNative]::IsWindowVisible($hwnd)) {throw 'Tray Hide failed before Quit'}
     Tray '退出'
-    if(-not $p.WaitForExit(5000)) {throw 'Tray Quit failed while locked'}
+    if(-not $p.WaitForExit(5000)) {throw 'Tray Quit failed while locked and hidden'}
     @{exact_context_menu=$true; reset_eligibility=$true; menu_reset=$true; real_left_click_through=$true; real_right_click_through=$true; overlay_remains_visible=$true; tray_left_click_keeps_lock=$true; tray_only_unlock=$true; persisted_click_through=$true; quit_while_locked=$true} | ConvertTo-Json | Set-Content dist/lock-test.json
 } finally {
     [BackdropNative]::mouse_event(4,0,0,0,[UIntPtr]::Zero)

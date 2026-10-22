@@ -960,7 +960,7 @@ impl App {
                         if balance.unlimited {
                             "不限额".into()
                         } else {
-                            balance.balance.clone().unwrap_or("未知".into())
+                            balance.rounded_balance().unwrap_or("未知".into())
                         }
                     ));
                 }

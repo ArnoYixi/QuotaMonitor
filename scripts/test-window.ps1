@@ -69,6 +69,7 @@ function MenuSelect([string]$wanted) {
 function TrayMenu([int]$index) {
     [DesktopProbe]::SetCursorPos(500,450) | Out-Null
     [DesktopProbe]::PostMessageW($script:tray,6002,[UIntPtr]::Zero,[IntPtr]0x204) | Out-Null
+    [DesktopProbe]::PostMessageW($script:tray,6002,[UIntPtr]::Zero,[IntPtr]0x205) | Out-Null
     $labels=@('显示悬浮窗','隐藏悬浮窗','刷新全部','打开菜单','退出')
     MenuSelect $labels[$index]
 }

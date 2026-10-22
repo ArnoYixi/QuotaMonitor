@@ -159,6 +159,7 @@ mod tests {
         inner: eframe::EframeWinitApplication<'a>,
         paused: Arc<AtomicBool>,
         exited: Arc<AtomicBool>,
+        timed_out: Arc<AtomicBool>,
         deadline: Instant,
     }
     impl ApplicationHandler<UserEvent> for PausableRenderer<'_> {
@@ -179,6 +180,7 @@ mod tests {
         fn about_to_wait(&mut self, el: &ActiveEventLoop) {
             self.inner.about_to_wait(el);
             if Instant::now() > self.deadline {
+                self.timed_out.store(true, Ordering::SeqCst);
                 el.exit();
             }
         }
@@ -223,10 +225,12 @@ mod tests {
         );
         let paused = Arc::new(AtomicBool::new(false));
         let exited = Arc::new(AtomicBool::new(false));
+        let timed_out = Arc::new(AtomicBool::new(false));
         let renderer = PausableRenderer {
             inner,
             paused: paused.clone(),
             exited: exited.clone(),
+            timed_out: timed_out.clone(),
             deadline: Instant::now() + Duration::from_secs(20),
         };
         let mut desktop = Desktop { renderer, shared };
@@ -317,6 +321,10 @@ mod tests {
             "commands with painting disabled: {checks:?}"
         );
         assert!(exited.load(Ordering::SeqCst), "normal shutdown must run");
+        assert!(
+            !timed_out.load(Ordering::SeqCst),
+            "hidden Quit must exit without the watchdog"
+        );
         assert!(passes_before >= 3, "real renderer must start successfully");
         assert_eq!(
             passes_before, passes_after,

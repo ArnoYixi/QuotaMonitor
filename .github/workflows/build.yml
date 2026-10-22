@@ -50,6 +50,12 @@ jobs:
       - name: Prepare software graphics for headless CI
         shell: pwsh
         run: ./scripts/prepare-ui-test.ps1
+      - name: Verify controls while rendering is suspended
+        shell: pwsh
+        run: |
+          $renderer = Split-Path $env:QUOTA_GUI_EXE -Parent
+          Copy-Item (Join-Path $renderer '*.dll') target/debug/deps/ -Force
+          cargo +1.99.0 test --locked --bin QuotaMonitori desktop::tests::event_loop_unlocks_and_exits_when_rendering_is_disabled -- --ignored --exact
       - name: Verify adaptive backdrop on solid and textured backgrounds
         shell: pwsh
         run: ./scripts/test-backdrop.ps1

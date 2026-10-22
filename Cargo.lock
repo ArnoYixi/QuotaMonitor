@@ -2443,7 +2443,7 @@ dependencies = [
 
 [[package]]
 name = "quotamonitori"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "directories",
@@ -2459,6 +2459,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
+ "winit",
  "winreg",
  "zstd",
 ]
@@ -4077,6 +4078,3 @@ checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
 ]
-
-
-

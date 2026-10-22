@@ -1,3 +1,4 @@
+use crate::desktop::Wake;
 use eframe::egui;
 use std::{path::Path, sync::mpsc::Sender};
 #[cfg(not(windows))]
@@ -44,7 +45,7 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
     data
 }
 #[cfg(not(windows))]
-fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, String> {
+fn build_tray(tx: Sender<TrayAction>, wake: Wake) -> Result<TrayIcon, String> {
     let menu = Menu::new();
     let show = MenuItem::new("显示悬浮窗", true, None);
     let hide = MenuItem::new("隐藏悬浮窗", true, None);
@@ -71,7 +72,7 @@ fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, St
         quit.id().clone(),
     ];
     let event_tx = tx.clone();
-    let event_ctx = ctx.clone();
+    let event_wake = wake.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
         if let Some(i) = ids.iter().position(|id| *id == event.id) {
             let _ = event_tx.send(
@@ -84,13 +85,7 @@ fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, St
                     TrayAction::Quit,
                 ][i],
             );
-            // A hidden/occluded eframe window may not run App::update on a
-            // repaint alone. Wake the native window before consuming the queue.
-            if i != 1 {
-                wake_window();
-                event_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            }
-            event_ctx.request_repaint();
+            event_wake();
         }
     }));
     TrayIconEvent::set_event_handler(Some(move |event| {
@@ -103,9 +98,7 @@ fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, St
             }
         ) {
             let _ = tx.send(TrayAction::Show);
-            wake_window();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.request_repaint();
+            wake();
         }
     }));
     let icon = tray_icon::Icon::from_rgba(icon_rgba(32), 32, 32).map_err(|e| e.to_string())?;
@@ -119,7 +112,7 @@ fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, St
 }
 
 #[cfg(windows)]
-fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, String> {
+fn build_tray(tx: Sender<TrayAction>, wake: Wake) -> Result<TrayIcon, String> {
     TrayIconEvent::set_event_handler(Some(move |event| {
         let action = match event {
             TrayIconEvent::Click {
@@ -136,18 +129,7 @@ fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, St
         };
         if let Some(action) = action {
             let _ = tx.send(action);
-            if matches!(action, TrayAction::Hide) {
-                unsafe {
-                    windows_sys::Win32::UI::WindowsAndMessaging::ShowWindow(
-                        main_window(),
-                        windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
-                    );
-                }
-            } else {
-                wake_window();
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            }
-            ctx.request_repaint();
+            wake();
         }
     }));
     let icon = tray_icon::Icon::from_rgba(icon_rgba(32), 32, 32).map_err(|e| e.to_string())?;
@@ -315,6 +297,9 @@ pub fn cancel_drag() {
 }
 
 #[cfg(all(test, windows))]
+pub(crate) static WINDOW_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(all(test, windows))]
 mod popup_tests {
     use super::*;
     use std::cell::Cell;
@@ -361,6 +346,7 @@ mod popup_tests {
 
     #[test]
     fn tray_popup_accepts_commands_with_a_hidden_click_through_overlay() {
+        let _guard = WINDOW_TEST_LOCK.lock().unwrap();
         unsafe {
             let overlay = CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
@@ -413,6 +399,62 @@ mod popup_tests {
                 still_locked && still_hidden,
                 "opening the menu must preserve the overlay"
             );
+        }
+    }
+
+    #[test]
+    fn native_unlock_does_not_need_a_paint_or_visibility_toggle() {
+        let _guard = WINDOW_TEST_LOCK.lock().unwrap();
+        unsafe {
+            let hwnd = CreateWindowExW(
+                WS_EX_TOOLWINDOW,
+                windows_sys::w!("STATIC"),
+                windows_sys::w!("input regression"),
+                WS_POPUP,
+                -30000,
+                -30000,
+                80,
+                40,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            );
+            assert!(!hwnd.is_null());
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            let mut rect = RECT::default();
+            GetWindowRect(hwnd, &mut rect);
+            for _ in 0..5 {
+                sync_native_window(hwnd, Some(true), true, false);
+                assert_ne!(
+                    GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT as isize,
+                    0
+                );
+                sync_native_window(hwnd, Some(true), false, false);
+                assert_eq!(
+                    GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT as isize,
+                    0
+                );
+                assert_ne!(IsWindowVisible(hwnd), 0);
+            }
+            sync_native_window(hwnd, Some(false), true, false);
+            sync_native_window(hwnd, Some(false), false, false);
+            assert_eq!(
+                IsWindowVisible(hwnd),
+                0,
+                "unlock must preserve hidden state"
+            );
+            assert_eq!(
+                GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TRANSPARENT as isize,
+                0
+            );
+            let mut after = RECT::default();
+            GetWindowRect(hwnd, &mut after);
+            assert_eq!(
+                (rect.left, rect.top, rect.right, rect.bottom),
+                (after.left, after.top, after.right, after.bottom)
+            );
+            DestroyWindow(hwnd);
         }
     }
 }
@@ -550,38 +592,68 @@ fn main_window() -> windows_sys::Win32::Foundation::HWND {
     }
 }
 
-fn wake_window() {
-    #[cfg(windows)]
-    unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::*;
-        let hwnd = main_window();
-        if !hwnd.is_null() {
-            if overlay_locked() {
-                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            } else {
-                ShowWindow(hwnd, SW_RESTORE);
-                SetForegroundWindow(hwnd);
+#[derive(Default)]
+pub struct WindowControl {
+    #[cfg(not(windows))]
+    last: Option<(Option<bool>, bool)>,
+}
+
+impl WindowControl {
+    pub fn apply(
+        &mut self,
+        ctx: &egui::Context,
+        visible: Option<bool>,
+        passthrough: bool,
+        reveal: bool,
+    ) {
+        #[cfg(windows)]
+        {
+            let _ = ctx;
+            sync_native_window(main_window(), visible, passthrough, reveal);
+        }
+        #[cfg(not(windows))]
+        {
+            let state = (visible, passthrough);
+            if self.last != Some(state) {
+                if let Some(visible) = visible {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(visible));
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(passthrough));
+                self.last = Some(state);
             }
-            PostMessageW(hwnd, WM_NULL, 0, 0);
+            if reveal {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                if !passthrough {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+            }
         }
     }
 }
 
-pub fn prepare_overlay() {
-    #[cfg(windows)]
+#[cfg(windows)]
+fn sync_native_window(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    visible: Option<bool>,
+    passthrough: bool,
+    reveal: bool,
+) {
     unsafe {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
-        let hwnd = main_window();
         if hwnd.is_null() {
             return;
         }
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let wanted = (style | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize);
+        let mut wanted = (style | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize);
+        let input_flags = (WS_EX_TRANSPARENT | WS_EX_LAYERED) as isize;
+        if passthrough {
+            wanted |= input_flags;
+        } else {
+            wanted &= !input_flags;
+        }
         if style != wanted {
-            let visible = IsWindowVisible(hwnd) != 0;
-            if visible {
-                ShowWindow(hwnd, SW_HIDE);
-            }
+            // Windows input state belongs to the event loop, not a deferred
+            // egui viewport command. Never hide/show to make a lock change stick.
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted);
             SetWindowPos(
                 hwnd,
@@ -592,8 +664,24 @@ pub fn prepare_overlay() {
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED,
             );
-            if visible {
-                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        if let Some(visible) = visible {
+            if !visible {
+                if IsWindowVisible(hwnd) != 0 {
+                    ShowWindow(hwnd, SW_HIDE);
+                }
+            } else if reveal || IsWindowVisible(hwnd) == 0 {
+                ShowWindow(
+                    hwnd,
+                    if passthrough {
+                        SW_SHOWNOACTIVATE
+                    } else {
+                        SW_RESTORE
+                    },
+                );
+            }
+            if visible && reveal && !passthrough {
+                SetForegroundWindow(hwnd);
             }
         }
     }
@@ -924,11 +1012,12 @@ fn sample_gutter(ctx: &egui::Context, rect: egui::Rect) -> Option<Vec<[u8; 3]>> 
 }
 
 impl Tray {
-    pub fn start(tx: Sender<TrayAction>, ctx: egui::Context) -> Self {
+    pub fn start(tx: Sender<TrayAction>, wake: Wake) -> Self {
         #[cfg(windows)]
         {
-            let icon = build_tray(tx.clone(), ctx).ok();
+            let icon = build_tray(tx.clone(), wake.clone()).ok();
             let _ = tx.send(TrayAction::Available(icon.is_some()));
+            wake();
             Self { _icon: icon }
         }
         #[cfg(target_os = "linux")]
@@ -936,12 +1025,12 @@ impl Tray {
             std::thread::spawn(move || {
                 if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() || gtk::init().is_err() {
                     let _ = tx.send(TrayAction::Available(false));
-                    ctx.request_repaint();
+                    wake();
                     return;
                 }
-                let icon = build_tray(tx.clone(), ctx.clone()).ok();
+                let icon = build_tray(tx.clone(), wake.clone()).ok();
                 let _ = tx.send(TrayAction::Available(icon.is_some()));
-                ctx.request_repaint();
+                wake();
                 if icon.is_some() {
                     gtk::main();
                 }
@@ -952,6 +1041,7 @@ impl Tray {
         #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = tx.send(TrayAction::Available(false));
+            wake();
             Self {}
         }
     }

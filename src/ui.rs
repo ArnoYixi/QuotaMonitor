@@ -42,6 +42,11 @@ pub struct App {
     _tray: Tray,
     tray_available: bool,
     quitting: bool,
+    wake: crate::desktop::Wake,
+    visible: bool,
+    reveal: bool,
+    window_ready: bool,
+    window_control: platform::WindowControl,
     notice: String,
     dirty: bool,
     last_save: Instant,
@@ -64,6 +69,7 @@ impl App {
         mut settings: Settings,
         demo: bool,
         lock: std::fs::File,
+        wake: crate::desktop::Wake,
     ) -> Self {
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
@@ -79,7 +85,7 @@ impl App {
         let (boot_tx, boot_rx) = mpsc::channel();
         let (tray_tx, tray_rx) = mpsc::channel();
         platform::set_overlay_locked(settings.lock_position);
-        let tray = Tray::start(tray_tx, cc.egui_ctx.clone());
+        let tray = Tray::start(tray_tx, wake.clone());
         let mut states = HashMap::new();
         if demo && settings.accounts.is_empty() {
             for alias in ["主账号", "备用账号", "工作账号"] {
@@ -99,11 +105,11 @@ impl App {
             }
             let root = dir.clone();
             let path = settings.codex_path.clone();
-            let ctx = cc.egui_ctx.clone();
+            let boot_wake = wake.clone();
             std::thread::spawn(move || {
                 let r = runtime::resolve(&root, &path);
                 let _ = boot_tx.send(Boot::Ready(r));
-                ctx.request_repaint();
+                boot_wake();
             });
         }
         let mut app = Self {
@@ -122,6 +128,11 @@ impl App {
             _tray: tray,
             tray_available: false,
             quitting: false,
+            wake,
+            visible: true,
+            reveal: false,
+            window_ready: false,
+            window_control: Default::default(),
             notice: if demo {
                 "演示模式：所有数据与操作均为模拟".into()
             } else {
@@ -167,7 +178,7 @@ impl App {
         self.dirty = false;
         self.last_save = Instant::now();
     }
-    fn spawn(&mut self, id: &str, ctx: &egui::Context) {
+    fn spawn(&mut self, id: &str) {
         if self.demo || self.workers.contains_key(id) {
             return;
         }
@@ -175,8 +186,6 @@ impl App {
             self.backend.clone(),
             self.settings.accounts.iter().find(|a| a.id == id),
         ) {
-            let context = ctx.clone();
-            let wake = Arc::new(move || context.request_repaint());
             let w = Worker::start(
                 id.into(),
                 self.dir.join("accounts").join(id),
@@ -185,7 +194,7 @@ impl App {
                 !a.enabled,
                 self.settings.ephemeral_login,
                 self.events_tx.clone(),
-                wake,
+                self.wake.clone(),
             );
             self.workers.insert(id.into(), w);
         }
@@ -260,7 +269,7 @@ impl App {
             self.send(&id, Command::Refresh);
         }
     }
-    fn add(&mut self, ctx: &egui::Context) {
+    fn add(&mut self) {
         if self
             .states
             .values()
@@ -285,7 +294,7 @@ impl App {
         );
         self.settings.accounts.push(a);
         self.save();
-        self.spawn(&id, ctx);
+        self.spawn(&id);
         self.page = Page::Detail(id.clone());
         if self.demo {
             return;
@@ -296,7 +305,8 @@ impl App {
             self.need_login = Some(id);
         }
     }
-    fn events(&mut self, ctx: &egui::Context) {
+    pub fn poll(&mut self, ctx: &egui::Context) {
+        let mut changed = false;
         if self.demo
             && self.last_demo_refresh.elapsed() >= Duration::from_secs(self.settings.interval)
         {
@@ -308,8 +318,10 @@ impl App {
                 }
             }
             self.last_demo_refresh = Instant::now();
+            changed = true;
         }
         while let Ok(Boot::Ready(result)) = self.boot_rx.try_recv() {
+            changed = true;
             match result {
                 Ok(b) => {
                     self.backend = Some(b);
@@ -321,7 +333,7 @@ impl App {
                         .map(|a| a.id.clone())
                         .collect();
                     for id in ids {
-                        self.spawn(&id, ctx);
+                        self.spawn(&id);
                     }
                     if let Some(id) = self.need_login.take() {
                         self.send(&id, Command::Login { device: false });
@@ -331,6 +343,7 @@ impl App {
             }
         }
         while let Ok(event) = self.events_rx.try_recv() {
+            changed = true;
             match event {
                 Event::State(mut s) => {
                     if !self.settings.accounts.iter().any(|a| a.id == s.id) {
@@ -362,22 +375,20 @@ impl App {
             }
         }
         while let Ok(action) = self.tray_rx.try_recv() {
+            changed = true;
             match action {
                 TrayAction::Hide => {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                    self.visible = false;
                 }
                 TrayAction::Show => {
                     self.page = Page::Monitor;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    if !self.settings.lock_position {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                    }
+                    self.visible = true;
+                    self.reveal = true;
                 }
                 TrayAction::Settings => {
                     self.page = Page::Settings;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    self.visible = true;
+                    self.reveal = true;
                 }
                 TrayAction::ToggleLock => {
                     if self.settings.lock_position {
@@ -388,12 +399,11 @@ impl App {
                     } else {
                         self.lock_overlay();
                     }
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    self.save();
                 }
                 TrayAction::Refresh => self.refresh_all(),
                 TrayAction::Quit => {
                     self.quitting = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 TrayAction::Available(v) => {
                     self.tray_available = v;
@@ -405,6 +415,38 @@ impl App {
                     }
                 }
             }
+        }
+        if changed {
+            ctx.request_repaint();
+        }
+        if self.dirty && self.last_save.elapsed() > Duration::from_secs(2) {
+            self.save();
+        }
+    }
+
+    pub fn sync_window(&mut self, ctx: &egui::Context) {
+        platform::set_overlay_locked(self.settings.lock_position);
+        self.window_control.apply(
+            ctx,
+            self.window_ready.then_some(self.visible),
+            self.settings.lock_position && self.page == Page::Monitor,
+            std::mem::take(&mut self.reveal),
+        );
+    }
+
+    pub fn quitting(&self) -> bool {
+        self.quitting
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
+    pub fn close_requested(&mut self) {
+        if self.tray_available {
+            self.visible = false;
+        } else {
+            self.quitting = true;
         }
     }
     fn overlay_interaction(&mut self, r: &egui::Response, account: Option<&str>) {
@@ -458,12 +500,7 @@ impl App {
                     })
                     .clicked()
                 {
-                    if self.tray_available {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                    } else {
-                        self.quitting = true;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
+                    self.close_requested();
                 }
                 if ui.small_button("设置").clicked() {
                     self.page = Page::Settings;
@@ -536,7 +573,6 @@ impl App {
         if ring {
             let center = rect.center();
             let radius = 31.0;
-            painter.circle_stroke(center, radius, Stroke::new(7.0_f32, Color32::BLACK));
             painter.circle_stroke(center, radius, Stroke::new(5.0_f32, track));
             if let Some(p) = p {
                 if p > 0.0 {
@@ -560,7 +596,6 @@ impl App {
             let pos = center - galley.size() * 0.5;
             Self::paint_text(ui, pos, galley);
         } else {
-            painter.rect_filled(rect.expand(1.0), 5.0, Color32::BLACK);
             painter.rect_filled(rect, 4.0, track);
             if let Some(p) = p {
                 if p > 0.0 {
@@ -585,6 +620,7 @@ impl App {
             self.page = Page::Monitor;
             self.context_open = false;
             self.dirty = true;
+            self.save();
         }
     }
 
@@ -611,7 +647,6 @@ impl App {
             platform::OverlayAction::Settings => self.page = Page::Settings,
             platform::OverlayAction::Quit => {
                 self.quitting = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
         ctx.request_repaint();
@@ -832,7 +867,7 @@ impl App {
         }
     }
 
-    fn accounts(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+    fn accounts(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("账号管理").size(18.0).strong());
         let mut moves = None;
         let mut changes = vec![];
@@ -868,7 +903,7 @@ impl App {
             self.send(&id, Command::Pause(p));
         }
         if ui.button("＋ 添加 OpenAI 账号").clicked() {
-            self.add(ctx);
+            self.add();
         }
         ui.label(
             RichText::new("每个账号独立登录；请在官方页面核对所选账号。")
@@ -1063,7 +1098,7 @@ impl App {
             self.refresh_all();
         }
         if ui.button("添加账号").clicked() {
-            self.add(ctx);
+            self.add();
         }
 
         let before = self.settings.clone();
@@ -1119,11 +1154,11 @@ impl App {
             let path = self.settings.codex_path.clone();
             let (tx, rx) = mpsc::channel();
             self.boot_rx = rx;
-            let c = ctx.clone();
+            let wake = self.wake.clone();
             self.notice = "正在准备官方组件…".into();
             std::thread::spawn(move || {
                 let _ = tx.send(Boot::Ready(runtime::resolve(&root, &path)));
-                c.request_repaint();
+                wake();
             });
         }
         ui.separator();
@@ -1162,7 +1197,6 @@ impl App {
         }
         if ui.button("退出程序").clicked() {
             self.quitting = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if serde_json::to_string(&before).ok() != serde_json::to_string(&self.settings).ok() {
             self.dirty = true;
@@ -1182,13 +1216,11 @@ impl App {
 }
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        platform::prepare_overlay();
         platform::update_drag(ctx);
         let mut geometry = platform::desktop_geometry(ctx);
         if self.was_monitor {
             self.monitor_rect = geometry.as_ref().map(|g| g.window);
         }
-        self.events(ctx);
         let scale = ctx.pixels_per_point();
         if self.page == Page::Monitor {
             if let Some(g) = geometry
@@ -1208,10 +1240,6 @@ impl eframe::App for App {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.page = Page::Monitor;
             self.context_open = false;
-        }
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.tray_available {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
             if self.settings.always_on_top {
@@ -1266,7 +1294,7 @@ impl eframe::App for App {
                 Page::Accounts => {
                     egui::ScrollArea::vertical()
                         .max_height(560.0)
-                        .show(ui, |ui| self.accounts(ui, ctx));
+                        .show(ui, |ui| self.accounts(ui));
                 }
                 Page::Detail(id) => {
                     egui::ScrollArea::vertical()
@@ -1291,10 +1319,6 @@ impl eframe::App for App {
         }
         #[cfg(not(windows))]
         self.fallback_context_menu(ctx);
-        platform::set_overlay_locked(self.settings.lock_position);
-        ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(
-            self.settings.lock_position && self.page == Page::Monitor,
-        ));
         if self.page == Page::Monitor && !self.was_monitor {
             if let (Some(g), Some(rect)) = (geometry.as_mut(), self.monitor_rect) {
                 g.window = rect;
@@ -1332,9 +1356,7 @@ impl eframe::App for App {
             self.last_size = size;
             ctx.request_repaint();
         }
-        if self.dirty && self.last_save.elapsed() > Duration::from_secs(2) {
-            self.save();
-        }
+        self.window_ready = true;
         self.was_monitor = self.page == Page::Monitor;
         // Keep background contrast current without a continuous rendering loop.
         ctx.request_repaint_after(Duration::from_secs(1));
@@ -1349,7 +1371,7 @@ impl eframe::App for App {
 }
 
 #[cfg(test)]
-mod layout_tests {
+pub(crate) mod layout_tests {
     use super::*;
 
     fn fixture(ctx: &egui::Context, view: &str) -> App {
@@ -1398,6 +1420,11 @@ mod layout_tests {
             _tray: Tray::default(),
             tray_available: false,
             quitting: false,
+            wake: Arc::new(|| {}),
+            visible: true,
+            reveal: false,
+            window_ready: true,
+            window_control: Default::default(),
             notice: String::new(),
             dirty: false,
             last_save: Instant::now(),
@@ -1415,6 +1442,69 @@ mod layout_tests {
         };
         app.apply_style(ctx);
         app
+    }
+
+    pub(crate) fn control_fixture(ctx: &egui::Context, dir: PathBuf) -> (App, Sender<TrayAction>) {
+        let mut app = fixture(ctx, "bar");
+        app.dir = dir;
+        let (tx, rx) = mpsc::channel();
+        app.tray_rx = rx;
+        app.tray_available = true;
+        (app, tx)
+    }
+
+    #[test]
+    fn hidden_controls_and_backend_events_are_processed_without_drawing() {
+        let dir = std::env::temp_dir().join(format!("quota-control-{}", uuid::Uuid::new_v4()));
+        let ctx = egui::Context::default();
+        let (mut app, tx) = control_fixture(&ctx, dir.clone());
+        let id = app.settings.accounts[0].id.clone();
+        app.states
+            .get_mut(&id)
+            .unwrap()
+            .quota
+            .as_mut()
+            .unwrap()
+            .fetched_at = 1;
+        tx.send(TrayAction::Hide).unwrap();
+        tx.send(TrayAction::ToggleLock).unwrap();
+        app.poll(&ctx);
+        assert!(!app.visible && app.settings.lock_position);
+        assert!(store::load_settings(&dir).unwrap().lock_position);
+        tx.send(TrayAction::Refresh).unwrap();
+        app.poll(&ctx);
+        assert!(app.states[&id].quota.as_ref().unwrap().fetched_at > 1);
+        assert!(!app.visible, "refresh must not show a hidden window");
+        tx.send(TrayAction::ToggleLock).unwrap();
+        app.poll(&ctx);
+        assert!(!app.settings.lock_position && !app.visible);
+        assert!(!store::load_settings(&dir).unwrap().lock_position);
+        tx.send(TrayAction::ToggleLock).unwrap();
+        tx.send(TrayAction::Settings).unwrap();
+        app.poll(&ctx);
+        assert!(app.settings.lock_position && app.page == Page::Settings && app.visible);
+        tx.send(TrayAction::Show).unwrap();
+        app.poll(&ctx);
+        assert!(app.settings.lock_position && app.page == Page::Monitor);
+        let mut state = engine::demo_state(&id, 0);
+        state.quota.as_mut().unwrap().fetched_at = 1234;
+        app.events_tx.send(Event::State(state)).unwrap();
+        app.last_save = Instant::now() - Duration::from_secs(3);
+        app.poll(&ctx);
+        assert_eq!(
+            store::load_settings(&dir).unwrap().accounts[0]
+                .cached
+                .as_ref()
+                .unwrap()
+                .fetched_at,
+            1234
+        );
+        tx.send(TrayAction::Hide).unwrap();
+        tx.send(TrayAction::Quit).unwrap();
+        app.poll(&ctx);
+        assert!(app.quitting && !app.visible);
+        assert_eq!(ctx.cumulative_pass_nr(), 0, "no UI pass should be needed");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -1,4 +1,5 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod desktop;
 mod platform;
 mod ui;
 use eframe::egui;
@@ -78,7 +79,6 @@ fn run() -> Result<(), String> {
         .with_transparent(true)
         .with_has_shadow(false)
         .with_taskbar(false)
-        .with_mouse_passthrough(settings.lock_position)
         .with_resizable(false)
         .with_inner_size([360.0, 220.0])
         .with_always_on_top()
@@ -97,10 +97,7 @@ fn run() -> Result<(), String> {
         vsync: true,
         ..Default::default()
     };
-    eframe::run_native(
-        "QuotaMonitori",
-        options,
-        Box::new(move |cc| Ok(Box::new(ui::App::new(cc, dir, settings, demo, lock)))),
-    )
-    .map_err(|e| e.to_string())
+    desktop::run(options, move |cc, wake| {
+        ui::App::new(cc, dir, settings, demo, lock, wake)
+    })
 }

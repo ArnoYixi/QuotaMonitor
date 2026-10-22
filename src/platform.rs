@@ -11,6 +11,7 @@ pub enum TrayAction {
     Hide,
     Refresh,
     Settings,
+    ToggleLock,
     Quit,
     Available(bool),
 }
@@ -49,12 +50,14 @@ fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, St
     let hide = MenuItem::new("隐藏悬浮窗", true, None);
     let refresh = MenuItem::new("刷新全部", true, None);
     let settings = MenuItem::new("设置", true, None);
+    let lock = MenuItem::new("锁定 / 解锁悬浮", true, None);
     let quit = MenuItem::new("退出 QuotaMonitori", true, None);
     menu.append_items(&[
         &show,
         &hide,
         &refresh,
         &settings,
+        &lock,
         &PredefinedMenuItem::separator(),
         &quit,
     ])
@@ -64,6 +67,7 @@ fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, St
         hide.id().clone(),
         refresh.id().clone(),
         settings.id().clone(),
+        lock.id().clone(),
         quit.id().clone(),
     ];
     let event_tx = tx.clone();
@@ -76,6 +80,7 @@ fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, St
                     TrayAction::Hide,
                     TrayAction::Refresh,
                     TrayAction::Settings,
+                    TrayAction::ToggleLock,
                     TrayAction::Quit,
                 ][i],
             );
@@ -154,8 +159,81 @@ fn build_tray(tx: Sender<TrayAction>, ctx: egui::Context) -> Result<TrayIcon, St
         .map_err(|e| e.to_string())
 }
 
+static OVERLAY_LOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_overlay_locked(locked: bool) {
+    OVERLAY_LOCKED.store(locked, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn overlay_locked() -> bool {
+    OVERLAY_LOCKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[derive(Clone, Copy)]
+pub enum OverlayAction {
+    Reset,
+    Lock,
+    Settings,
+    Quit,
+}
+
+pub fn overlay_menu(can_reset: bool, can_lock: bool) -> Option<OverlayAction> {
+    #[cfg(windows)]
+    {
+        match native_popup(
+            &[
+                (1, "使用重置卡", can_reset),
+                (2, "锁定悬浮", can_lock),
+                (3, "打开菜单", true),
+                (4, "退出", true),
+            ],
+            false,
+        ) {
+            1 => Some(OverlayAction::Reset),
+            2 => Some(OverlayAction::Lock),
+            3 => Some(OverlayAction::Settings),
+            4 => Some(OverlayAction::Quit),
+            _ => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (can_reset, can_lock);
+        None
+    }
+}
+
 #[cfg(windows)]
 fn native_tray_menu() -> Option<TrayAction> {
+    let lock = if overlay_locked() {
+        "解锁悬浮"
+    } else {
+        "锁定悬浮"
+    };
+    match native_popup(
+        &[
+            (1, "显示悬浮窗", true),
+            (2, "隐藏悬浮窗", true),
+            (3, "刷新全部", true),
+            (4, "打开菜单", true),
+            (6, lock, true),
+            (0, "", false),
+            (5, "退出", true),
+        ],
+        true,
+    ) {
+        1 => Some(TrayAction::Show),
+        2 => Some(TrayAction::Hide),
+        3 => Some(TrayAction::Refresh),
+        4 => Some(TrayAction::Settings),
+        5 => Some(TrayAction::Quit),
+        6 => Some(TrayAction::ToggleLock),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn native_popup(items: &[(usize, &str, bool)], tray_owner: bool) -> i32 {
     use windows_sys::Win32::{
         Foundation::*, System::Threading::GetCurrentProcessId, UI::WindowsAndMessaging::*,
     };
@@ -177,28 +255,24 @@ fn native_tray_menu() -> Option<TrayAction> {
     unsafe {
         let menu = CreatePopupMenu();
         if menu.is_null() {
-            return None;
+            return 0;
         }
-        for (id, label) in [
-            (1, "显示悬浮窗"),
-            (2, "隐藏悬浮窗"),
-            (3, "刷新全部"),
-            (4, "设置"),
-            (5, "退出 QuotaMonitori"),
-        ] {
-            if id == 5 {
+        for &(id, label, enabled) in items {
+            if id == 0 {
                 AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            } else {
+                let text: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+                let flags = MF_STRING | if enabled { MF_ENABLED } else { MF_GRAYED };
+                AppendMenuW(menu, flags, id, text.as_ptr());
             }
-            let text: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
-            AppendMenuW(menu, MF_STRING, id, text.as_ptr());
         }
         let mut owner = main_window();
-        EnumWindows(Some(visit), &mut owner as *mut HWND as isize);
+        if tray_owner {
+            EnumWindows(Some(visit), &mut owner as *mut HWND as isize);
+        }
         let mut point = POINT { x: 0, y: 0 };
         GetCursorPos(&mut point);
         SetForegroundWindow(owner);
-        // Return the selected ID directly: no WM_COMMAND/subclass forwarding
-        // through a third-party hidden window is needed.
         let command = TrackPopupMenu(
             menu,
             TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON,
@@ -210,13 +284,19 @@ fn native_tray_menu() -> Option<TrayAction> {
         );
         DestroyMenu(menu);
         PostMessageW(owner, WM_NULL, 0, 0);
-        match command {
-            1 => Some(TrayAction::Show),
-            2 => Some(TrayAction::Hide),
-            3 => Some(TrayAction::Refresh),
-            4 => Some(TrayAction::Settings),
-            5 => Some(TrayAction::Quit),
-            _ => None,
+        command
+    }
+}
+
+pub fn cancel_drag() {
+    #[cfg(windows)]
+    {
+        DRAG_ORIGIN.set(None);
+        unsafe {
+            use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetCapture, ReleaseCapture};
+            if GetCapture() == main_window() {
+                ReleaseCapture();
+            }
         }
     }
 }
@@ -360,8 +440,12 @@ fn wake_window() {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
         let hwnd = main_window();
         if !hwnd.is_null() {
-            ShowWindow(hwnd, SW_RESTORE);
-            SetForegroundWindow(hwnd);
+            if overlay_locked() {
+                ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+            } else {
+                ShowWindow(hwnd, SW_RESTORE);
+                SetForegroundWindow(hwnd);
+            }
             PostMessageW(hwnd, WM_NULL, 0, 0);
         }
     }
@@ -689,7 +773,11 @@ fn sample_gutter(ctx: &egui::Context, rect: egui::Rect) -> Option<Vec<[u8; 3]>> 
             let mut sample = |x, y| {
                 let c = GetPixel(memory, x, y);
                 if c != 0xffffffff {
-                    pixels.push([(c & 255) as u8, ((c >> 8) & 255) as u8, ((c >> 16) & 255) as u8]);
+                    pixels.push([
+                        (c & 255) as u8,
+                        ((c >> 8) & 255) as u8,
+                        ((c >> 16) & 255) as u8,
+                    ]);
                 }
             };
             for i in 0..32 {
@@ -826,5 +914,3 @@ pub fn show_error(message: &str) {
     #[cfg(not(windows))]
     eprintln!("QuotaMonitori: {message}");
 }
-
-

@@ -157,6 +157,39 @@ impl Quota {
             .as_ref()
             .map(|r| r.available_count)
     }
+    pub fn compact_suffix(&self) -> String {
+        let mut text = String::new();
+        if let Some(count) = self.card_count().filter(|count| *count > 0) {
+            text.push_str(&format!(" *{count}重置卡"));
+        }
+        let credits = self.rate_limits.credits.as_ref().or_else(|| {
+            self.rate_limits_by_limit_id
+                .as_ref()?
+                .get("codex")?
+                .credits
+                .as_ref()
+        });
+        if let Some(credits) = credits {
+            if credits.unlimited {
+                text.push_str(" *不限积分");
+            } else if credits.has_credits {
+                if let Some(balance) = credits.balance.as_deref().map(str::trim) {
+                    if balance
+                        .parse::<f64>()
+                        .is_ok_and(|value| value.is_finite() && value > 0.0)
+                    {
+                        let value = if balance.contains('.') && !balance.contains(['e', 'E']) {
+                            balance.trim_end_matches('0').trim_end_matches('.')
+                        } else {
+                            balance
+                        };
+                        text.push_str(&format!(" *{value}积分"));
+                    }
+                }
+            }
+        }
+        text
+    }
     pub fn choose_card(&self, time: i64) -> Result<&ResetCard, String> {
         if !self.depleted() {
             return Err("当前没有已耗尽的 Codex 额度".into());
@@ -310,5 +343,55 @@ mod tests {
                 assert!((a[i] as i16 - b[i] as i16).abs() <= 1)
             }
         }
+    }
+
+    #[test]
+    fn compact_suffix_hides_zero_unknown_and_invalid_balances() {
+        let mut quota = q(json!([]), 0);
+        assert_eq!(quota.compact_suffix(), "");
+        for balance in ["0", "0.000", "-2", "NaN", "inf", "unknown", ""] {
+            quota.rate_limits.credits = Some(CreditBalance {
+                balance: Some(balance.into()),
+                has_credits: true,
+                unlimited: false,
+            });
+            assert_eq!(quota.compact_suffix(), "", "{balance}");
+        }
+        quota.rate_limits.credits.as_mut().unwrap().balance = None;
+        assert_eq!(quota.compact_suffix(), "");
+    }
+
+    #[test]
+    fn compact_suffix_keeps_real_values_and_does_not_sum_duplicate_buckets() {
+        let mut quota = q(json!([c("a", None), c("b", None), c("c", None)]), 3);
+        quota.rate_limits.credits = Some(CreditBalance {
+            balance: Some("200.000".into()),
+            has_credits: true,
+            unlimited: false,
+        });
+        quota.rate_limits_by_limit_id = Some(BTreeMap::from([(
+            "codex".into(),
+            quota.rate_limits.clone(),
+        )]));
+        assert_eq!(quota.compact_suffix(), " *3重置卡 *200积分");
+        quota.rate_limits.credits.as_mut().unwrap().balance = Some("0.0004".into());
+        assert_eq!(quota.compact_suffix(), " *3重置卡 *0.0004积分");
+        quota.rate_limits.credits.as_mut().unwrap().has_credits = false;
+        assert_eq!(quota.compact_suffix(), " *3重置卡");
+    }
+
+    #[test]
+    fn compact_suffix_can_use_the_codex_bucket_and_unlimited_balance() {
+        let mut quota = q(json!([]), 0);
+        let bucket = Bucket {
+            credits: Some(CreditBalance {
+                balance: None,
+                has_credits: false,
+                unlimited: true,
+            }),
+            ..Default::default()
+        };
+        quota.rate_limits_by_limit_id = Some(BTreeMap::from([("codex".into(), bucket)]));
+        assert_eq!(quota.compact_suffix(), " *不限积分");
     }
 }

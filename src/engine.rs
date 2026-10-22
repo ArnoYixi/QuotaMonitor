@@ -501,10 +501,21 @@ fn logical(message: &str) -> RpcError {
 pub fn demo_state(id: &str, index: usize) -> ViewState {
     let used = [24, 78, 100][index % 3];
     let time = now();
-    let q=Quota::parse(json!({"accountId":format!("demo-{index}"),"rateLimits":{"limitId":"codex","primary":{"usedPercent":used,"windowDurationMins":10080,"resetsAt":time+129600}},"rateLimitResetCredits":{"availableCount":3,"credits":[
+    let mut q=Quota::parse(json!({"accountId":format!("demo-{index}"),"rateLimits":{"limitId":"codex","primary":{"usedPercent":used,"windowDurationMins":10080,"resetsAt":time+129600}},"rateLimitResetCredits":{"availableCount":3,"credits":[
         {"id":"long","resetType":"codexRateLimits","status":"available","grantedAt":time-86400,"expiresAt":time+864000},
         {"id":"soon","resetType":"codexRateLimits","status":"available","grantedAt":time-3600,"expiresAt":time+7200},
         {"id":"forever","resetType":"codexRateLimits","status":"available","grantedAt":time-600,"expiresAt":null}]}}),time).unwrap();
+    q.rate_limits.credits = Some(crate::model::CreditBalance {
+        balance: Some(if index % 3 == 0 { "200.00" } else { "0" }.into()),
+        has_credits: index % 3 == 0,
+        unlimited: false,
+    });
+    if index % 3 == 1 {
+        q.rate_limit_reset_credits = Some(crate::model::ResetCards {
+            available_count: 0,
+            credits: Some(vec![]),
+        });
+    }
     let mut s = ViewState::new(id.into(), Some(q));
     s.email = Some(format!("demo{}@example.com", index + 1));
     s.plan = Some("pro".into());

@@ -53,6 +53,9 @@ pub struct App {
     columns: usize,
     was_monitor: bool,
     monitor_rect: Option<egui::Rect>,
+    card_size: Vec2,
+    monitor_size: Vec2,
+    context_open: bool,
 }
 impl App {
     pub fn new(
@@ -75,6 +78,7 @@ impl App {
         let (events_tx, events_rx) = mpsc::channel();
         let (boot_tx, boot_rx) = mpsc::channel();
         let (tray_tx, tray_rx) = mpsc::channel();
+        platform::set_overlay_locked(settings.lock_position);
         let tray = Tray::start(tray_tx, cc.egui_ctx.clone());
         let mut states = HashMap::new();
         if demo && settings.accounts.is_empty() {
@@ -133,6 +137,9 @@ impl App {
             columns: 1,
             was_monitor: true,
             monitor_rect: None,
+            card_size: Vec2::new(208.0, 43.0),
+            monitor_size: Vec2::new(216.0, 51.0),
+            context_open: false,
         };
         app.apply_style(&cc.egui_ctx);
         app.save();
@@ -363,24 +370,49 @@ impl App {
                     self.page = Page::Monitor;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    if !self.settings.lock_position {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
                 }
                 TrayAction::Settings => {
                     self.page = Page::Settings;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
                 }
+                TrayAction::ToggleLock => {
+                    if self.settings.lock_position {
+                        // This is the only user action that clears the lock.
+                        self.settings.lock_position = false;
+                        platform::set_overlay_locked(false);
+                        self.dirty = true;
+                    } else {
+                        self.lock_overlay();
+                    }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                }
                 TrayAction::Refresh => self.refresh_all(),
                 TrayAction::Quit => {
                     self.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
-                TrayAction::Available(v) => self.tray_available = v,
+                TrayAction::Available(v) => {
+                    self.tray_available = v;
+                    // Never leave a click-through window without a recovery icon.
+                    if !v && self.settings.lock_position {
+                        self.settings.lock_position = false;
+                        platform::set_overlay_locked(false);
+                        self.dirty = true;
+                    }
+                }
             }
         }
     }
     fn overlay_interaction(&mut self, r: &egui::Response, account: Option<&str>) {
-        if r.hovered() && account.is_some() {
+        if account.is_some()
+            && (r.hovered()
+                || r.ctx
+                    .input(|i| i.pointer.interact_pos().is_some_and(|p| r.rect.contains(p))))
+        {
             self.context_account = account.map(String::from);
         }
         // Start on the press frame: waiting for the drag threshold is too late on Windows.
@@ -460,20 +492,6 @@ impl App {
     }
     fn paint_text(ui: &egui::Ui, pos: egui::Pos2, galley: Arc<egui::Galley>) {
         let color = ui.visuals().override_text_color.unwrap_or(Color32::WHITE);
-        let outline = if color == Color32::WHITE {
-            Color32::BLACK
-        } else {
-            Color32::WHITE
-        };
-        for offset in [
-            Vec2::new(-1.0, 0.0),
-            Vec2::new(1.0, 0.0),
-            Vec2::new(0.0, -1.0),
-            Vec2::new(0.0, 1.0),
-        ] {
-            ui.painter()
-                .galley_with_override_text_color(pos + offset, galley.clone(), outline);
-        }
         ui.painter()
             .galley_with_override_text_color(pos, galley, color);
     }
@@ -559,6 +577,113 @@ impl App {
         }
         response
     }
+    fn lock_overlay(&mut self) {
+        if self.tray_available {
+            platform::cancel_drag();
+            self.settings.lock_position = true;
+            platform::set_overlay_locked(true);
+            self.page = Page::Monitor;
+            self.context_open = false;
+            self.dirty = true;
+        }
+    }
+
+    fn can_reset(&self, id: &str) -> bool {
+        self.states.get(id).is_some_and(|state| {
+            state.status != Status::Resetting
+                && (state.pending
+                    || (state.status == Status::Ready
+                        && state.quota.as_ref().is_some_and(|q| {
+                            !q.stale(now(), self.settings.interval) && q.choose_card(now()).is_ok()
+                        })))
+        })
+    }
+
+    fn overlay_action(&mut self, action: platform::OverlayAction, ctx: &egui::Context) {
+        self.context_open = false;
+        match action {
+            platform::OverlayAction::Reset => {
+                if let Some(id) = self.context_account.clone().filter(|id| self.can_reset(id)) {
+                    self.send(&id, Command::Reset);
+                }
+            }
+            platform::OverlayAction::Lock => self.lock_overlay(),
+            platform::OverlayAction::Settings => self.page = Page::Settings,
+            platform::OverlayAction::Quit => {
+                self.quitting = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+        ctx.request_repaint();
+    }
+
+    fn heading(&self, account: &AccountConfig) -> (String, String) {
+        let name = if self.demo {
+            format!("{} · 演示", account.alias)
+        } else {
+            account.alias.clone()
+        };
+        let suffix = self
+            .states
+            .get(&account.id)
+            .and_then(|state| state.quota.as_ref())
+            .map(Quota::compact_suffix)
+            .unwrap_or_default();
+        (name, suffix)
+    }
+
+    fn measure_monitor(
+        &mut self,
+        ctx: &egui::Context,
+        geometry: Option<&platform::DesktopGeometry>,
+    ) {
+        let ring = self.settings.view == "ring";
+        let font = FontId::proportional(13.0);
+        let mut header_height = ctx.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap("Ag国".into(), font.clone(), Color32::WHITE)
+                .size()
+                .y
+        });
+        let mut width = if ring { 96.0_f32 } else { 208.0_f32 };
+        let mut count = 0;
+        for account in self.settings.accounts.iter().filter(|a| a.visible) {
+            count += 1;
+            let (name, suffix) = self.heading(account);
+            let title = format!("{name}{suffix}");
+            let galley =
+                ctx.fonts_mut(|fonts| fonts.layout_no_wrap(title, font.clone(), Color32::WHITE));
+            header_height = header_height.max(galley.size().y);
+            let percentage = if ring { 0.0 } else { 48.0 };
+            width = width.max(galley.size().x + percentage + 16.0);
+        }
+        let available = geometry
+            .map(|g| g.work.size() / ctx.pixels_per_point())
+            .unwrap_or(Vec2::new(1920.0, 1080.0));
+        width = width
+            .min(if ring { 300.0 } else { 380.0 })
+            .min((available.x - 8.0).max(32.0));
+        let height = if count == 0 {
+            header_height + 12.0
+        } else {
+            header_height + 5.0 + if ring { 74.0 } else { 8.0 } + 12.0
+        };
+        self.card_size = Vec2::new(width.ceil(), height.ceil());
+        let fit = ((available.x - 2.0) / (self.card_size.x + 6.0))
+            .floor()
+            .max(1.0) as usize;
+        self.columns = match self.edge {
+            platform::Edge::Top | platform::Edge::Bottom => count.max(1).min(fit),
+            platform::Edge::Free if ring => count.clamp(1, 3).min(fit),
+            _ => 1,
+        };
+        let rows = count.max(1).div_ceil(self.columns);
+        self.monitor_size = Vec2::new(
+            self.columns as f32 * (self.card_size.x + 6.0) + 2.0,
+            rows as f32 * (self.card_size.y + 6.0) + 2.0,
+        );
+    }
+
     fn monitor(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
         let accounts: Vec<_> = self
@@ -569,42 +694,54 @@ impl App {
             .cloned()
             .collect();
         if accounts.is_empty() {
-            let rect = egui::Rect::from_min_size(ui.next_widget_position(), Vec2::new(232.0, 24.0));
+            let rect = egui::Rect::from_min_size(ui.next_widget_position(), self.card_size);
             Self::backdrop(ui, rect, egui::Id::new("empty-monitor"));
-            let r = Self::overlay_text(ui, "右键添加账号".into(), 13.0, ui.available_width());
-            self.overlay_interaction(&r, None);
+            ui.scope_builder(
+                egui::UiBuilder::new().max_rect(rect.shrink2(Vec2::new(8.0, 6.0))),
+                |ui| {
+                    let r =
+                        Self::overlay_text(ui, "右键添加账号".into(), 13.0, ui.available_width());
+                    self.overlay_interaction(&r, None);
+                },
+            );
         } else {
             let ring = self.settings.view == "ring";
-            let width = if ring {
-                86.0
-            } else if self.columns > 1 {
-                174.0
-            } else {
-                232.0
-            };
-            for row in accounts.chunks(self.columns.max(1)) {
+            for row in accounts.chunks(self.columns) {
                 ui.horizontal_top(|ui| {
-                    for a in row {
+                    for account in row {
                         ui.allocate_ui_with_layout(
-                            Vec2::new(width, if ring { 122.0 } else { 56.0 }),
+                            self.card_size,
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
-                                ui.set_width(width);
-                                ui.set_min_height(if ring { 122.0 } else { 56.0 });
+                                ui.set_min_size(self.card_size);
+                                ui.set_max_size(self.card_size);
                                 let rect = egui::Rect::from_min_size(
                                     ui.next_widget_position(),
-                                    Vec2::new(width, if ring { 122.0 } else { 56.0 }),
+                                    self.card_size,
                                 );
                                 Self::backdrop(
                                     ui,
                                     rect,
-                                    egui::Id::new(("account-backdrop", &a.id)),
+                                    egui::Id::new(("account-backdrop", &account.id)),
                                 );
-                                if ring {
-                                    ui.vertical_centered(|ui| self.account_widget(ui, a, true));
-                                } else {
-                                    self.account_widget(ui, a, false);
-                                }
+                                let inner = rect.shrink2(Vec2::new(8.0, 6.0));
+                                ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+                                    ui.set_width(inner.width());
+                                    ui.spacing_mut().item_spacing = Vec2::new(0.0, 5.0);
+                                    if ring {
+                                        ui.vertical_centered(|ui| {
+                                            self.account_widget(ui, account, true)
+                                        });
+                                    } else {
+                                        self.account_widget(ui, account, false);
+                                    }
+                                });
+                                let r = ui.interact(
+                                    rect,
+                                    ui.id().with("overlay-drag"),
+                                    Sense::click_and_drag(),
+                                );
+                                self.overlay_interaction(&r, Some(&account.id));
                             },
                         );
                     }
@@ -616,74 +753,80 @@ impl App {
     fn backdrop(ui: &mut egui::Ui, rect: egui::Rect, id: egui::Id) {
         let (text, fill) = platform::overlay_appearance(ui.ctx(), rect, id);
         ui.visuals_mut().override_text_color = Some(text);
-        // Leave a transparent sampling gutter around each card. Its pixels
-        // never contain this tint, text, or progress graphics.
         if fill.a() > 0 {
             ui.painter().rect_filled(rect, 6.0, fill);
         }
     }
 
-    fn account_widget(&mut self, ui: &mut egui::Ui, a: &AccountConfig, ring: bool) {
-        let s = self
-            .states
-            .get(&a.id)
-            .cloned()
-            .unwrap_or_else(|| ViewState::new(a.id.clone(), a.cached.clone()));
-        let q = s.quota.as_ref();
-        let p = q.and_then(Quota::tightest).map(|(_, w)| w.remaining());
-        let stale =
-            s.status != Status::Ready || q.is_none_or(|q| q.stale(now(), self.settings.interval));
-        let alias = if self.demo {
-            format!("{} · 演示", a.alias)
-        } else {
-            a.alias.clone()
-        };
-        if ring {
-            let r = Self::overlay_text(ui, alias, 13.0, ui.available_width());
-            self.overlay_interaction(&r, Some(&a.id));
-        } else {
-            ui.horizontal(|ui| {
-                let r =
-                    Self::overlay_text(ui, alias, 13.0, (ui.available_width() - 52.0).max(20.0));
-                self.overlay_interaction(&r, Some(&a.id));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let r = Self::overlay_text(
-                        ui,
-                        p.map(remaining_text).unwrap_or("—".into()),
-                        13.0,
-                        48.0,
-                    );
-                    self.overlay_interaction(&r, Some(&a.id));
-                });
-            });
-        }
-        let r = Self::progress(ui, p, ring, stale);
-        self.overlay_interaction(&r, Some(&a.id));
-        let can =
-            q.is_some_and(|q| q.choose_card(now()).is_ok()) && s.status == Status::Ready && !stale;
-        if can || s.pending || s.status == Status::Resetting {
-            let text = if s.status == Status::Resetting {
-                "处理中"
-            } else if s.pending {
-                "核对重置"
-            } else {
-                "重置"
-            };
-            let enabled = s.status != Status::Resetting && s.status != Status::Paused;
-            let response = ui
-                .add_enabled_ui(enabled, |ui| {
-                    Self::overlay_text(ui, text.into(), 12.0, 80.0)
-                })
-                .inner;
-            response
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text));
-            if response
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("使用最早到期的 1 张重置卡")
-                .clicked()
-            {
-                self.send(&a.id, Command::Reset);
+    fn account_widget(&mut self, ui: &mut egui::Ui, account: &AccountConfig, ring: bool) {
+        let state = self.states.get(&account.id);
+        let quota = state.and_then(|s| s.quota.as_ref());
+        let p = quota
+            .and_then(Quota::tightest)
+            .map(|(_, window)| window.remaining());
+        let stale = state.is_none_or(|s| s.status != Status::Ready)
+            || quota.is_none_or(|q| q.stale(now(), self.settings.interval));
+        let (name, suffix) = self.heading(account);
+        let percentage = p.map(remaining_text).unwrap_or("—".into());
+        let suffix_width = ui.fonts_mut(|fonts| {
+            fonts
+                .layout_no_wrap(suffix.clone(), FontId::proportional(13.0), Color32::WHITE)
+                .size()
+                .x
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            let reserve = suffix_width + if ring { 0.0 } else { 48.0 };
+            let name_width = (ui.available_width() - reserve).max(12.0);
+            let _ = Self::overlay_text(ui, name, 13.0, name_width);
+            if !suffix.is_empty() {
+                let _ = Self::overlay_text(ui, suffix, 13.0, suffix_width);
             }
+            if !ring {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let _ = Self::overlay_text(ui, percentage, 13.0, 48.0);
+                });
+            }
+        });
+        let _ = Self::progress(ui, p, ring, stale);
+    }
+
+    #[cfg(not(windows))]
+    fn fallback_context_menu(&mut self, ctx: &egui::Context) {
+        if !self.context_open {
+            return;
+        }
+        let can_reset = self
+            .context_account
+            .as_deref()
+            .is_some_and(|id| self.can_reset(id));
+        let mut action = None;
+        egui::Window::new("悬浮菜单")
+            .title_bar(false)
+            .resizable(false)
+            .fixed_pos(egui::pos2(4.0, 4.0))
+            .show(ctx, |ui| {
+                if ui
+                    .add_enabled(can_reset, egui::Button::new("使用重置卡"))
+                    .clicked()
+                {
+                    action = Some(platform::OverlayAction::Reset);
+                }
+                if ui
+                    .add_enabled(self.tray_available, egui::Button::new("锁定悬浮"))
+                    .clicked()
+                {
+                    action = Some(platform::OverlayAction::Lock);
+                }
+                if ui.button("打开菜单").clicked() {
+                    action = Some(platform::OverlayAction::Settings);
+                }
+                if ui.button("退出").clicked() {
+                    action = Some(platform::OverlayAction::Quit);
+                }
+            });
+        if let Some(action) = action {
+            self.overlay_action(action, ctx);
         }
     }
 
@@ -935,7 +1078,6 @@ impl App {
         ui.add(egui::Slider::new(&mut self.settings.opacity, 0.45..=1.0).text("设置面板不透明度"));
         ui.add(egui::Slider::new(&mut self.settings.scale, 0.8..=1.8).text("界面缩放"));
         ui.checkbox(&mut self.settings.always_on_top, "始终置顶");
-        ui.checkbox(&mut self.settings.lock_position, "锁定窗口位置");
         ui.checkbox(&mut self.settings.light_theme, "浅色外观");
         if ui
             .add_enabled(
@@ -1045,42 +1187,25 @@ impl eframe::App for App {
             self.monitor_rect = geometry.as_ref().map(|g| g.window);
         }
         self.events(ctx);
-        let count = self.settings.accounts.iter().filter(|a| a.visible).count();
         let scale = ctx.pixels_per_point();
         if self.page == Page::Monitor {
             if let Some(g) = geometry
                 .as_ref()
-                .filter(|g| !g.dragging && self.was_monitor)
+                .filter(|g| !g.dragging && self.was_monitor && !self.context_open)
             {
                 self.edge = g.edge(scale);
             }
-            self.columns = match self.edge {
-                platform::Edge::Top | platform::Edge::Bottom => {
-                    let cell = if self.settings.view == "ring" {
-                        92.0
-                    } else {
-                        180.0
-                    };
-                    let fit = geometry
-                        .as_ref()
-                        .map(|g| ((g.work.width() / scale - 8.0) / cell).floor() as usize)
-                        .unwrap_or(3);
-                    count.max(1).min(fit.max(1))
-                }
-                platform::Edge::Left | platform::Edge::Right => 1,
-                platform::Edge::Free if self.settings.view == "ring" => count.clamp(1, 3),
-                _ => 1,
-            };
+            self.measure_monitor(ctx, geometry.as_ref());
         }
-        // Handle the native press independently of widget click ownership. A system
-        // window drag may consume the preceding release event on Windows.
-        let show_settings = self.page == Page::Monitor
+        let open_context = self.page == Page::Monitor
+            && !self.settings.lock_position
             && ctx.input(|i| i.pointer.button_pressed(egui::PointerButton::Secondary));
-        if show_settings {
+        if open_context {
             self.context_account = None;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.page = Page::Monitor;
+            self.context_open = false;
         }
         if ctx.input(|i| i.viewport().close_requested()) && !self.quitting && self.tray_available {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1148,33 +1273,47 @@ impl eframe::App for App {
                 }
             }
         });
-        if show_settings {
-            self.page = Page::Settings;
+        if open_context {
+            let can_reset = self
+                .context_account
+                .as_deref()
+                .is_some_and(|id| self.can_reset(id));
+            if let Some(action) = platform::overlay_menu(can_reset, self.tray_available) {
+                self.overlay_action(action, ctx);
+            }
+            #[cfg(not(windows))]
+            {
+                self.context_open = true;
+            }
+            ctx.input_mut(|input| input.pointer = Default::default());
         }
+        #[cfg(not(windows))]
+        self.fallback_context_menu(ctx);
+        platform::set_overlay_locked(self.settings.lock_position);
+        ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(
+            self.settings.lock_position && self.page == Page::Monitor,
+        ));
         if self.page == Page::Monitor && !self.was_monitor {
             if let (Some(g), Some(rect)) = (geometry.as_mut(), self.monitor_rect) {
                 g.window = rect;
             }
             self.last_size = Vec2::ZERO;
         }
-        let ring = self.settings.view == "ring";
-        let rows = count.div_ceil(self.columns.max(1));
-        let width = if self.page != Page::Monitor {
-            470.0
-        } else if ring {
-            (self.columns * 92 + 2) as f32
-        } else if self.columns > 1 {
-            (self.columns * 180 + 2) as f32
+        let width = if self.page == Page::Monitor {
+            self.monitor_size.x
         } else {
-            240.0
+            470.0
         };
         let height = match self.page {
             Page::Settings => 680.0,
             Page::Accounts => 460.0,
             Page::Detail(_) => 700.0,
-            Page::Monitor if count == 0 => 36.0,
-            Page::Monitor if ring => (rows * 130 + 8) as f32,
-            Page::Monitor => (rows * 62 + 8) as f32,
+            Page::Monitor => self.monitor_size.y,
+        };
+        let height = if self.context_open {
+            height.max(160.0)
+        } else {
+            height
         };
         let available = geometry
             .as_ref()
@@ -1206,5 +1345,3 @@ impl eframe::App for App {
         self.workers.clear();
     }
 }
-
-

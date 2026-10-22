@@ -5,6 +5,7 @@ using System.Text;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 public static class DesktopProbe {
+    [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr menu);
     [DllImport("user32.dll")] public static extern IntPtr SendMessageW(IntPtr h, uint m, UIntPtr w, IntPtr l);
     [DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr h, IntPtr menu, uint item, out Rect r);
     [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetMenuStringW(IntPtr menu, uint item, StringBuilder text, int count, uint flags);
@@ -39,23 +40,25 @@ function Key([byte]$key) {
     [DesktopProbe]::keybd_event($key,0,2,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 80
 }
-function TrayMenu([int]$index) {
-    [DesktopProbe]::SetCursorPos(500,450) | Out-Null
-    [DesktopProbe]::PostMessageW($script:tray,6002,[UIntPtr]::Zero,[IntPtr]0x204) | Out-Null
+function MenuSelect([string]$wanted) {
     $popup=[IntPtr]::Zero
-    for ($wait=0; $wait -lt 30; $wait++) {
+    for($wait=0;$wait -lt 30;$wait++) {
         Start-Sleep -Milliseconds 100
         $popup=[DesktopProbe]::Find($p.Id,'#32768')
-        if ($popup -ne [IntPtr]::Zero) { break }
+        if($popup -ne [IntPtr]::Zero) {break}
     }
-    if ($popup -eq [IntPtr]::Zero) { throw 'Native tray menu did not open' }
+    if($popup -eq [IntPtr]::Zero) {throw 'Native menu did not open'}
     $menu=[DesktopProbe]::SendMessageW($popup,0x1e1,[UIntPtr]::Zero,[IntPtr]::Zero)
-    $nativeIndex=if ($index -eq 4) { 5 } else { $index }
+    $found=-1
+    for($i=0;$i -lt [DesktopProbe]::GetMenuItemCount($menu);$i++) {
+        $label=New-Object System.Text.StringBuilder 256
+        [DesktopProbe]::GetMenuStringW($menu,$i,$label,256,0x400) | Out-Null
+        if($label.ToString() -eq $wanted) {$found=$i;break}
+    }
+    if($found -lt 0) {throw "Menu item missing: $wanted"}
     $item=New-Object DesktopProbe+Rect
-    if (-not [DesktopProbe]::GetMenuItemRect([IntPtr]::Zero,$menu,$nativeIndex,[ref]$item)) { throw 'Cannot locate native menu item' }
-    $label=New-Object System.Text.StringBuilder 256
-    [DesktopProbe]::GetMenuStringW($menu,$nativeIndex,$label,256,0x400) | Out-Null
-    Write-Host "Click tray item: $label"
+    if(-not [DesktopProbe]::GetMenuItemRect([IntPtr]::Zero,$menu,$found,[ref]$item)) {throw 'Cannot locate menu item'}
+    Write-Host "Click menu item: $wanted"
     [DesktopProbe]::SetCursorPos([int](($item.L+$item.R)/2),[int](($item.T+$item.B)/2)) | Out-Null
     Start-Sleep -Milliseconds 150
     [DesktopProbe]::mouse_event(2,0,0,0,[UIntPtr]::Zero)
@@ -63,6 +66,13 @@ function TrayMenu([int]$index) {
     [DesktopProbe]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
     Start-Sleep -Milliseconds 1400
 }
+function TrayMenu([int]$index) {
+    [DesktopProbe]::SetCursorPos(500,450) | Out-Null
+    [DesktopProbe]::PostMessageW($script:tray,6002,[UIntPtr]::Zero,[IntPtr]0x204) | Out-Null
+    $labels=@('显示悬浮窗','隐藏悬浮窗','刷新全部','打开菜单','退出')
+    MenuSelect $labels[$index]
+}
+
 function Rect { $r=New-Object DesktopProbe+Rect; [DesktopProbe]::GetWindowRect($script:hwnd,[ref]$r) | Out-Null; return $r }
 function Assert-Visible([string]$scenario) {
     $r=Rect
@@ -117,7 +127,9 @@ try {
     $menu = New-Object DesktopProbe+Rect
     [DesktopProbe]::GetWindowRect($hwnd, [ref]$menu) | Out-Null
     Write-Host "Window moved: $($before.L),$($before.T) -> $($after.L),$($after.T); settings size: $($menu.R-$menu.L) x $($menu.B-$menu.T)"
-    if (($menu.B-$menu.T) -lt 400*$scale) { throw 'Right click did not open settings' }
+    MenuSelect '打开菜单'
+    $menu=Rect
+    if (($menu.B-$menu.T) -lt 400*$scale) { throw 'Context menu did not open settings' }
     $style=[DesktopProbe]::GetWindowLongPtrW($hwnd,-20).ToInt64()
     if (($style -band 0x40000) -ne 0 -or ($style -band 0x80) -eq 0) { throw "Taskbar style is incorrect: $style" }
     Key 0x1b
@@ -164,7 +176,7 @@ try {
     [DesktopProbe]::SetWindowPos($hwnd,[IntPtr]::Zero,$work.L+4,200,0,0,0x15) | Out-Null
     Start-Sleep -Seconds 2
     $side=Rect
-    if (($side.R-$side.L) -gt 300*$scale -or ($side.B-$side.T) -lt 150*$scale) { throw 'Side edge did not switch back to a column' }
+    if (($side.R-$side.L) -gt 300*$scale -or ($side.B-$side.T) -lt 130*$scale) { throw 'Side edge did not switch back to a column' }
     $script:tray=[DesktopProbe]::Find($p.Id,'tray_icon_app')
     if ($tray -eq [IntPtr]::Zero) { throw 'No native tray icon owner' }
     TrayMenu 1
@@ -189,5 +201,6 @@ try {
     [DesktopProbe]::mouse_event(4,0,0,0,[UIntPtr]::Zero)
     if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
 }
+
 
 

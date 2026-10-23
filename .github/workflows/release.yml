@@ -1,8 +1,5 @@
 name: Release
 on:
-  push:
-    branches: [main]
-    paths: ['docs/releases/v*.md']
   workflow_dispatch:
 
 permissions:

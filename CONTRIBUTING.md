@@ -48,6 +48,6 @@ cargo test --locked --bin QuotaMonitor ui::layout_tests::render_readme_previews 
 1. 更新 `Cargo.toml` 中的版本，并同步 `Cargo.lock`。
 2. 添加对应的 `docs/releases/v<版本>.md`，说明变化、升级方式与限制。
 3. 完成本地测试和打包自检后提交到 `main`。
-4. `Release` 工作流会在发布说明变更时构建 Windows 包、自检、生成校验和，然后创建对应 tag 和 GitHub Release。也可以手动运行该工作流。
+4. 需要正式发布时，在 GitHub Actions 中手动运行 `Release` 工作流。它会构建 Windows 包、自检、生成校验和，然后创建对应 tag 和 GitHub Release。普通提交不会触发发布。
 
 工作流使用仓库的 `GITHUB_TOKEN`，只在发布任务中授予写入内容的权限。已有正式 Release 不会被覆盖；发布失败时保留构建产物以便排查。发布前请确认仓库的 GitHub Actions 可正常运行。

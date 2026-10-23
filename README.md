@@ -2,7 +2,7 @@
 
 轻量的桌面悬浮额度监视器，用于查看多个 Codex 账号的剩余额度、积分和重置卡。中文界面，支持横条、圆环、拖动定位与系统托盘。
 
-[下载最新版](https://github.com/ArnoYixi/QuotaMonitor/releases/latest) · [报告问题](https://github.com/ArnoYixi/QuotaMonitor/issues) · [参与开发](CONTRIBUTING.md)
+[版本页面](https://github.com/ArnoYixi/QuotaMonitor/releases) · [报告问题](https://github.com/ArnoYixi/QuotaMonitor/issues) · [参与开发](CONTRIBUTING.md)
 
 本项目由社区独立开发，与 OpenAI 无隶属或背书关系。额度和可用功能以账号实际返回的数据为准。
 
@@ -32,6 +32,8 @@
 - **本地运行**：Rust + egui 原生程序；Windows 发布包包含所需登录组件，无需另装 Python、Node.js 或 Codex CLI。
 
 ## 下载与使用
+
+目前尚未发布二进制 Release，可按下方“从源码构建”生成程序。发布包的使用方式如下：
 
 1. 在 [Releases](https://github.com/ArnoYixi/QuotaMonitor/releases) 下载 `QuotaMonitor-v版本号-windows-x64.zip`。
 2. 解压到固定目录，双击 `QuotaMonitor.exe`。
@@ -95,7 +97,7 @@ sudo apt-get install libgtk-3-dev libayatana-appindicator3-dev libxdo-dev libxkb
 ./scripts/build-linux.sh
 ```
 
-Linux 的托盘、定位和窗口行为依赖桌面环境；Wayland 尤其受合成器限制。当前 Release 提供 Windows x64 包。
+Linux 的托盘、定位和窗口行为依赖桌面环境；Wayland 尤其受合成器限制。目前打包脚本面向 Windows x64。
 
 开发调试与测试：
 

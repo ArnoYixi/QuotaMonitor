@@ -1,14 +1,17 @@
 [package]
-name = "quotamonitori"
-version = "0.1.5"
+name = "quotamonitor"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.88"
-description = "Minimal native multi-account Codex quota monitor"
+description = "Native desktop quota monitor for multiple Codex accounts"
+repository = "https://github.com/ArnoYixi/QuotaMonitor"
+homepage = "https://github.com/ArnoYixi/QuotaMonitor"
+readme = "README.md"
 license = "MIT"
 build = "build.rs"
 
 [[bin]]
-name = "QuotaMonitori"
+name = "QuotaMonitor"
 path = "src/main.rs"
 
 [dependencies]
@@ -43,6 +46,9 @@ panic = "abort"
 
 [build-dependencies]
 sha2 = "0.10"
+
+[dev-dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["png"] }
 
 
 

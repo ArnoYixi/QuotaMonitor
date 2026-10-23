@@ -1,6 +1,6 @@
 use crate::platform::{self, Tray, TrayAction};
 use eframe::egui::{self, Color32, FontId, RichText, Sense, Stroke, Vec2};
-use quotamonitori::{
+use quotamonitor::{
     engine::{self, Command, Event, Status, ViewState, Worker},
     model::{Quota, now, quota_color, remaining_text, time_label},
     runtime::{self, BackendCommand},
@@ -1178,7 +1178,7 @@ impl App {
         });
         ui.label(
             RichText::new(format!(
-                "QuotaMonitori {} · 官方组件 {}",
+                "QuotaMonitor {} · 官方组件 {}",
                 env!("CARGO_PKG_VERSION"),
                 runtime::RUNTIME_VERSION
             ))
@@ -1451,6 +1451,170 @@ pub(crate) mod layout_tests {
         app.tray_rx = rx;
         app.tray_available = true;
         (app, tx)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "renders documentation images; requires a Windows desktop and OpenGL"]
+    fn render_readme_previews() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use winit::platform::windows::EventLoopBuilderExtWindows;
+
+        const FILES: [&str; 3] = [
+            "bars-vertical.png",
+            "rings-horizontal.png",
+            "bars-light.png",
+        ];
+        fn preview(ctx: &egui::Context, case: usize) -> App {
+            let mut app = fixture(ctx, if case == 1 { "ring" } else { "bar" });
+            // Fixed, explicitly documented sample data. No workers or login are started.
+            app.demo = false;
+            app.settings.light_theme = case == 2;
+            app.settings.accounts.truncate(2);
+            app.edge = if case == 0 {
+                platform::Edge::Left
+            } else {
+                platform::Edge::Top
+            };
+            for (index, account) in app.settings.accounts.iter_mut().enumerate() {
+                account.alias = "arnoyix".into();
+                let quota = app
+                    .states
+                    .get_mut(&account.id)
+                    .unwrap()
+                    .quota
+                    .as_mut()
+                    .unwrap();
+                quota.fetched_at = now();
+                quota.rate_limits.primary.as_mut().unwrap().used_percent =
+                    if index == 0 { 22.0 } else { 94.0 };
+                quota.rate_limit_reset_credits = None;
+                quota.rate_limits.credits =
+                    (index == 1).then(|| quotamonitor::model::CreditBalance {
+                        balance: Some("60325".into()),
+                        has_credits: true,
+                        unlimited: false,
+                    });
+            }
+            app.apply_style(ctx);
+            app
+        }
+
+        struct Preview {
+            app: App,
+            case: usize,
+            passes: usize,
+            requested: bool,
+            output: PathBuf,
+            done: Arc<AtomicUsize>,
+            deadline: Instant,
+        }
+        impl eframe::App for Preview {
+            fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+                let screenshot = ctx.input(|input| {
+                    input.events.iter().find_map(|event| match event {
+                        egui::Event::Screenshot {
+                            user_data, image, ..
+                        } if user_data
+                            .data
+                            .as_ref()
+                            .and_then(|v| v.downcast_ref::<usize>())
+                            == Some(&self.case) =>
+                        {
+                            Some(image.clone())
+                        }
+                        _ => None,
+                    })
+                });
+                if let Some(image) = screenshot {
+                    let pixels: Vec<u8> = image
+                        .pixels
+                        .iter()
+                        .flat_map(|color| color.to_srgba_unmultiplied())
+                        .collect();
+                    image::save_buffer(
+                        self.output.join(FILES[self.case]),
+                        &pixels,
+                        image.width() as u32,
+                        image.height() as u32,
+                        image::ColorType::Rgba8,
+                    )
+                    .unwrap();
+                    self.case += 1;
+                    self.done.store(self.case, Ordering::SeqCst);
+                    if self.case == FILES.len() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        return;
+                    }
+                    self.app = preview(ctx, self.case);
+                    self.passes = 0;
+                    self.requested = false;
+                }
+                if Instant::now() > self.deadline {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+                self.app.measure_monitor(ctx, None);
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                    self.app.monitor_size + Vec2::splat(16.0),
+                ));
+                let background = if self.case == 2 {
+                    Color32::from_rgb(246, 248, 250)
+                } else {
+                    Color32::from_rgb(28, 34, 45)
+                };
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE.fill(background).inner_margin(12))
+                    .show(ctx, |ui| self.app.monitor(ui, ctx));
+                self.passes += 1;
+                if self.passes >= 6 && !self.requested {
+                    self.requested = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(
+                        self.case,
+                    )));
+                }
+                ctx.request_repaint_after(Duration::from_millis(30));
+            }
+        }
+
+        let _guard = platform::WINDOW_TEST_LOCK.lock().unwrap();
+        let done = Arc::new(AtomicUsize::new(0));
+        let saved = done.clone();
+        let output = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/images");
+        std::fs::create_dir_all(&output).unwrap();
+        eframe::run_native(
+            "QuotaMonitor documentation preview",
+            eframe::NativeOptions {
+                viewport: egui::ViewportBuilder::default()
+                    .with_title("QuotaMonitor documentation preview")
+                    .with_decorations(false)
+                    .with_taskbar(false)
+                    .with_active(false)
+                    .with_inner_size([480.0, 180.0]),
+                event_loop_builder: Some(Box::new(|builder| {
+                    builder.with_any_thread(true);
+                })),
+                renderer: eframe::Renderer::Glow,
+                ..Default::default()
+            },
+            Box::new(move |cc| {
+                Ok(Box::new(Preview {
+                    app: preview(&cc.egui_ctx, 0),
+                    case: 0,
+                    passes: 0,
+                    requested: false,
+                    output,
+                    done: saved,
+                    deadline: Instant::now() + Duration::from_secs(20),
+                }))
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            done.load(Ordering::SeqCst),
+            FILES.len(),
+            "preview rendering timed out"
+        );
     }
 
     #[test]

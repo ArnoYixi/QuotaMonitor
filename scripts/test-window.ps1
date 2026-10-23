@@ -84,7 +84,7 @@ function Assert-Visible([string]$scenario) {
     return $r
 }
 $data = Join-Path $env:RUNNER_TEMP ('quota-ui-' + [guid]::NewGuid())
-$exe = if ($env:QUOTA_GUI_EXE) { $env:QUOTA_GUI_EXE } else { 'dist/QuotaMonitori.exe' }
+$exe = if ($env:QUOTA_GUI_EXE) { $env:QUOTA_GUI_EXE } else { 'dist/QuotaMonitor.exe' }
 $p = Start-Process -FilePath $exe -ArgumentList @('--demo', '--data-dir', $data, '--view', 'bar') -PassThru
 try {
     for ($i=0; $i -lt 30; $i++) {

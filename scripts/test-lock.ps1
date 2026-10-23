@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'desktop-fixture.ps1')
-$exe=if($env:QUOTA_GUI_EXE) { $env:QUOTA_GUI_EXE } else { 'dist/QuotaMonitori.exe' }
+$exe=if($env:QUOTA_GUI_EXE) { $env:QUOTA_GUI_EXE } else { 'dist/QuotaMonitor.exe' }
 $data=Join-Path $env:RUNNER_TEMP ('quota-lock-'+[guid]::NewGuid())
 $script:p=$null
 $fixture=$false

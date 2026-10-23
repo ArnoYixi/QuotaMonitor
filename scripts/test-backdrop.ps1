@@ -18,7 +18,7 @@ function Contrast($b,[int]$y,[int]$start,[int]$end) {
     $sum=0.0; foreach($v in $values) { $sum+=($v-$mean)*($v-$mean) }
     return [Math]::Sqrt($sum/$values.Count)
 }
-$exe=if($env:QUOTA_GUI_EXE) { $env:QUOTA_GUI_EXE } else { 'dist/QuotaMonitori.exe' }
+$exe=if($env:QUOTA_GUI_EXE) { $env:QUOTA_GUI_EXE } else { 'dist/QuotaMonitor.exe' }
 $results=@()
 foreach($view in @('bar','ring')) {
     $data=Join-Path $env:RUNNER_TEMP ('quota-backdrop-'+[guid]::NewGuid())

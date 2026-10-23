@@ -29,7 +29,7 @@ pub fn run(
     let shared: Shared = Rc::default();
     let app_state = shared.clone();
     let renderer = eframe::create_native(
-        "QuotaMonitori",
+        "QuotaMonitor",
         options,
         Box::new(move |cc| {
             let ctx = cc.egui_ctx.clone();
@@ -204,10 +204,10 @@ mod tests {
         let app_dir = dir.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let inner = eframe::create_native(
-            "QuotaMonitori regression",
+            "QuotaMonitor regression",
             eframe::NativeOptions {
                 viewport: egui::ViewportBuilder::default()
-                    .with_title("QuotaMonitori · no-paint regression")
+                    .with_title("QuotaMonitor · no-paint regression")
                     .with_decorations(false)
                     .with_transparent(true)
                     .with_taskbar(false),
@@ -247,7 +247,7 @@ mod tests {
             let handle = unsafe {
                 FindWindowW(
                     std::ptr::null(),
-                    windows_sys::w!("QuotaMonitori · no-paint regression"),
+                    windows_sys::w!("QuotaMonitor · no-paint regression"),
                 )
             } as isize;
             let check = |action, locked, visible| {
@@ -335,7 +335,7 @@ mod tests {
             "resuming painting must not restore a stale lock or prevent hidden quit"
         );
         assert!(
-            !quotamonitori::store::load_settings(&dir)
+            !quotamonitor::store::load_settings(&dir)
                 .unwrap()
                 .lock_position
         );

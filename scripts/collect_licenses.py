@@ -9,7 +9,7 @@ metadata = json.loads(subprocess.check_output(
     ['cargo', 'metadata', '--locked', '--format-version', '1'], cwd=ROOT))
 rows = []
 for package in sorted(metadata['packages'], key=lambda p: (p['name'], p['version'])):
-    if package['name'] == 'quotamonitori':
+    if package['name'] == 'quotamonitor':
         continue
     root = pathlib.Path(package['manifest_path']).parent
     section = ['\n' + '=' * 72, f"{package['name']} {package['version']}",

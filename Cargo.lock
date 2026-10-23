@@ -2442,14 +2442,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "quotamonitori"
-version = "0.1.5"
+name = "quotamonitor"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "directories",
  "eframe",
  "fs2",
  "gtk",
+ "image",
  "open",
  "serde",
  "serde_json",

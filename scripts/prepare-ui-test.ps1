@@ -11,7 +11,7 @@ $gl = Get-ChildItem "$root/mesa" -Recurse -Filter opengl32.dll | Where-Object { 
 if (-not $gl) { throw 'Missing 64-bit software renderer' }
 $app = Join-Path $root 'app'
 New-Item -ItemType Directory -Force $app | Out-Null
-Copy-Item dist/QuotaMonitori.exe "$app/QuotaMonitori.exe"
+Copy-Item dist/QuotaMonitor.exe "$app/QuotaMonitor.exe"
 Copy-Item "$($gl.DirectoryName)/*.dll" $app
-"QUOTA_GUI_EXE=$app/QuotaMonitori.exe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+"QUOTA_GUI_EXE=$app/QuotaMonitor.exe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 'GALLIUM_DRIVER=llvmpipe' | Out-File $env:GITHUB_ENV -Append -Encoding utf8

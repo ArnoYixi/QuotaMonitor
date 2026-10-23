@@ -1,0 +1,83 @@
+name: Release
+on:
+  push:
+    branches: [main]
+    paths: ['docs/releases/v*.md']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install 1.99.0 --profile minimal --component rustfmt
+      - name: Select toolchain
+        run: rustup override set 1.99.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Read version and release notes
+        id: version
+        shell: pwsh
+        run: |
+          $version = (Select-String -LiteralPath Cargo.toml -Pattern '^version = "([0-9]+\.[0-9]+\.[0-9]+)"$').Matches[0].Groups[1].Value
+          if (-not $version) { throw 'Missing package version' }
+          if (-not (Test-Path -LiteralPath "docs/releases/v$version.md")) { throw 'Missing release notes' }
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+          "folder=dist/releases/v$version" >> $env:GITHUB_OUTPUT
+      - name: Verify and test
+        shell: pwsh
+        run: |
+          cargo fmt --check
+          if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
+          cargo test --all-targets --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+      - name: Build bundled Windows executable
+        shell: pwsh
+        run: ./scripts/build-windows.ps1
+      - name: Prepare software graphics for desktop regression
+        shell: pwsh
+        run: ./scripts/prepare-ui-test.ps1
+      - name: Verify controls without drawing
+        shell: pwsh
+        run: |
+          $renderer = Split-Path $env:QUOTA_GUI_EXE -Parent
+          Copy-Item (Join-Path $renderer '*.dll') target/debug/deps/ -Force
+          cargo test --locked --bin QuotaMonitor desktop::tests::event_loop_unlocks_and_exits_when_rendering_is_disabled -- --ignored --exact
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop regression failed' }
+      - name: Package and verify embedded runtime
+        shell: pwsh
+        run: ./scripts/package-windows.ps1
+      - name: Preserve release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuotaMonitor-${{ steps.version.outputs.tag }}-windows-x64
+          path: ${{ steps.version.outputs.folder }}/
+          compression-level: 0
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_FOLDER: ${{ steps.version.outputs.folder }}
+        run: |
+          $existing = gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect existing releases' }
+          if (($existing | ConvertFrom-Json).tagName -contains $env:RELEASE_TAG) {
+            throw 'Release already exists; inspect it before retrying, do not overwrite it'
+          }
+          $zip = Join-Path $env:RELEASE_FOLDER "QuotaMonitor-$env:RELEASE_TAG-windows-x64.zip"
+          $checksums = Join-Path $env:RELEASE_FOLDER 'SHA256SUMS.txt'
+          gh release create $env:RELEASE_TAG $zip $checksums --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "QuotaMonitor $env:RELEASE_TAG" --notes-file "docs/releases/$env:RELEASE_TAG.md" --draft
+          if ($LASTEXITCODE -ne 0) { throw 'Creating release or uploading assets failed; inspect the draft' }
+          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Publishing release failed; draft and assets are preserved' }

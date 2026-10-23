@@ -52,7 +52,7 @@ fn build_tray(tx: Sender<TrayAction>, wake: Wake) -> Result<TrayIcon, String> {
     let refresh = MenuItem::new("刷新全部", true, None);
     let settings = MenuItem::new("设置", true, None);
     let lock = MenuItem::new("锁定 / 解锁悬浮", true, None);
-    let quit = MenuItem::new("退出 QuotaMonitori", true, None);
+    let quit = MenuItem::new("退出 QuotaMonitor", true, None);
     menu.append_items(&[
         &show,
         &hide,
@@ -105,7 +105,7 @@ fn build_tray(tx: Sender<TrayAction>, wake: Wake) -> Result<TrayIcon, String> {
     TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
-        .with_tooltip("QuotaMonitori · 额度监听")
+        .with_tooltip("QuotaMonitor · 额度监听")
         .with_icon(icon)
         .build()
         .map_err(|e| e.to_string())
@@ -135,7 +135,7 @@ fn build_tray(tx: Sender<TrayAction>, wake: Wake) -> Result<TrayIcon, String> {
     let icon = tray_icon::Icon::from_rgba(icon_rgba(32), 32, 32).map_err(|e| e.to_string())?;
     TrayIconBuilder::new()
         .with_menu_on_left_click(false)
-        .with_tooltip("QuotaMonitori · 额度监听")
+        .with_tooltip("QuotaMonitor · 额度监听")
         .with_icon(icon)
         .build()
         .map_err(|e| e.to_string())
@@ -226,7 +226,7 @@ fn native_popup(items: &[(usize, &str, bool)], tray_owner: bool) -> i32 {
             CreateWindowExW(
                 WS_EX_TOOLWINDOW,
                 windows_sys::w!("STATIC"),
-                windows_sys::w!("QuotaMonitori tray menu"),
+                windows_sys::w!("QuotaMonitor tray menu"),
                 WS_POPUP,
                 0,
                 0,
@@ -351,7 +351,7 @@ mod popup_tests {
             let overlay = CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT,
                 windows_sys::w!("STATIC"),
-                windows_sys::w!("QuotaMonitori · popup regression"),
+                windows_sys::w!("QuotaMonitor · popup regression"),
                 WS_POPUP,
                 0,
                 0,
@@ -571,8 +571,7 @@ fn main_window() -> windows_sys::Win32::Foundation::HWND {
             if pid == GetCurrentProcessId() {
                 let mut title = [0u16; 128];
                 let len = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
-                if String::from_utf16_lossy(&title[..len as usize]).starts_with("QuotaMonitori ·")
-                {
+                if String::from_utf16_lossy(&title[..len as usize]).starts_with("QuotaMonitor ·") {
                     *(result as *mut HWND) = hwnd;
                     return 0;
                 }
@@ -840,7 +839,7 @@ pub fn resize_overlay(
 struct BackdropCache {
     sampled: std::time::Instant,
     frame: std::time::Instant,
-    style: quotamonitori::appearance::Appearance,
+    style: quotamonitor::appearance::Appearance,
     opacity: f32,
 }
 #[cfg(windows)]
@@ -853,7 +852,7 @@ pub fn overlay_appearance(
     rect: egui::Rect,
     id: egui::Id,
 ) -> (egui::Color32, egui::Color32) {
-    let fallback = quotamonitori::appearance::Appearance::fallback(!ctx.style().visuals.dark_mode);
+    let fallback = quotamonitor::appearance::Appearance::fallback(!ctx.style().visuals.dark_mode);
     #[cfg(windows)]
     {
         return BACKDROPS.with_borrow_mut(|cache| {
@@ -870,7 +869,7 @@ pub fn overlay_appearance(
             if now.duration_since(entry.sampled).as_secs_f32() >= 1.0 {
                 if let Some(samples) = sample_gutter(ctx, rect) {
                     let style =
-                        quotamonitori::appearance::Appearance::from_samples(&samples, entry.style);
+                        quotamonitor::appearance::Appearance::from_samples(&samples, entry.style);
                     if style.opacity != entry.style.opacity {
                         entry.frame = now;
                     }
@@ -1066,14 +1065,19 @@ pub fn autostart(enabled: bool, exe: &Path) -> Result<(), String> {
             .create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run")
             .map_err(|_| "无法更新开机启动设置")?;
         if enabled {
-            key.set_value("QuotaMonitori", &format!("\"{}\"", exe.display()))
+            key.set_value("QuotaMonitor", &format!("\"{}\"", exe.display()))
                 .map_err(|_| "无法保存开机启动")?;
         } else {
-            match key.delete_value("QuotaMonitori") {
+            match key.delete_value("QuotaMonitor") {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => return Err("无法关闭开机启动".into()),
             }
+        }
+        match key.delete_value("QuotaMonitori") {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("无法清理旧版开机启动".into()),
         }
     }
     #[cfg(target_os = "linux")]
@@ -1082,7 +1086,7 @@ pub fn autostart(enabled: bool, exe: &Path) -> Result<(), String> {
             .ok_or("无法定位配置目录")?
             .config_dir()
             .join("autostart");
-        let path = config.join("quotamonitori.desktop");
+        let path = config.join("quotamonitor.desktop");
         if enabled {
             std::fs::create_dir_all(&config).map_err(|_| "无法创建启动目录")?;
             let raw = exe.to_string_lossy();
@@ -1095,9 +1099,13 @@ pub fn autostart(enabled: bool, exe: &Path) -> Result<(), String> {
                 .replace('`', "\\`")
                 .replace('$', "\\$")
                 .replace('%', "%%");
-            std::fs::write(path,format!("[Desktop Entry]\nType=Application\nName=QuotaMonitori\nExec=\"{quoted}\"\nTerminal=false\nX-GNOME-Autostart-enabled=true\n")).map_err(|_|"无法保存启动文件")?;
+            std::fs::write(path,format!("[Desktop Entry]\nType=Application\nName=QuotaMonitor\nExec=\"{quoted}\"\nTerminal=false\nX-GNOME-Autostart-enabled=true\n")).map_err(|_|"无法保存启动文件")?;
         } else if path.exists() {
             std::fs::remove_file(path).map_err(|_| "无法删除启动文件")?;
+        }
+        let legacy = config.join("quotamonitori.desktop");
+        if legacy.exists() {
+            std::fs::remove_file(legacy).map_err(|_| "无法清理旧版开机启动".to_string())?;
         }
     }
     Ok(())
@@ -1107,7 +1115,7 @@ pub fn show_error(message: &str) {
     {
         use windows_sys::Win32::UI::WindowsAndMessaging::*;
         let text: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
-        let title: Vec<u16> = "QuotaMonitori".encode_utf16().chain(Some(0)).collect();
+        let title: Vec<u16> = "QuotaMonitor".encode_utf16().chain(Some(0)).collect();
         unsafe {
             MessageBoxW(
                 std::ptr::null_mut(),
@@ -1118,5 +1126,5 @@ pub fn show_error(message: &str) {
         }
     }
     #[cfg(not(windows))]
-    eprintln!("QuotaMonitori: {message}");
+    eprintln!("QuotaMonitor: {message}");
 }

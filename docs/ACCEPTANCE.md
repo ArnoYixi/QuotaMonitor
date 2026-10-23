@@ -1,6 +1,6 @@
 # 验收清单
 
-## 0.1.5 文字、排版、菜单与锁定验收
+## 0.1.6 文字、排版、菜单与锁定验收
 
 - 纯色背景上主界面没有底色、边框、标题、设置按钮或刷新时间。
 - Windows 复杂壁纸、图标或棋盘格背景上自动增加半透明圆角衬底，黑白文字跟随背景明暗；移回纯色后衬底淡出。
@@ -28,7 +28,7 @@
 
 ## 先检查程序本身
 
-1. Windows x64 解压发布包，直接运行 `QuotaMonitori.exe`。无需安装语言运行环境。首次启动完成官方组件解压后，应看到添加账号界面。
+1. Windows x64 解压发布包，直接运行 `QuotaMonitor.exe`。无需安装语言运行环境。首次启动完成官方组件解压后，应看到添加账号界面。
 2. 运行 `Demo.bat`，看到明确的「演示」标识和三个账号，剩余额度分别为 76%、22%、0%。
 3. 切换横条 / 圆环；检查高额度绿色、低额度橙色、0% 红色，以及第一账号的卡片与积分后缀、第二账号无后缀。检查内边距和无描边文字。
 4. 右键第三个账号选择「使用重置卡」，卡片数量从 3 变为 2；进入详情检查最早到期卡已被消耗，长期卡还在。再次模拟耗尽，继续验证排序。再验证锁定穿透、托盘解锁和重启恢复。
@@ -62,7 +62,7 @@
 Windows 桌面与 OpenGL 可用时另运行：
 
 ```powershell
-cargo test --locked --bin QuotaMonitori desktop::tests::event_loop_unlocks_and_exits_when_rendering_is_disabled -- --ignored --exact
+cargo test --locked --bin QuotaMonitor desktop::tests::event_loop_unlocks_and_exits_when_rendering_is_disabled -- --ignored --exact
 ```
 
 该回归启动真实 eframe 窗口，暂停绘制后验证连续锁定、解锁、隐藏、打开设置；断言绘制次数不变，并在恢复绘制后确认旧锁定状态不会被重新应用，最后验证隐藏退出和设置保存。

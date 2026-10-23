@@ -182,7 +182,7 @@ impl Rpc {
             #[cfg(windows)]
             job,
         };
-        rpc.request("initialize",json!({"clientInfo":{"name":"quotamonitori","title":"QuotaMonitori","version":env!("CARGO_PKG_VERSION")}}),Duration::from_secs(30))?;
+        rpc.request("initialize",json!({"clientInfo":{"name":"quotamonitor","title":"QuotaMonitor","version":env!("CARGO_PKG_VERSION")}}),Duration::from_secs(30))?;
         rpc.write(&json!({"method":"initialized","params":{}}))?;
         Ok(rpc)
     }

@@ -1,4 +1,4 @@
-use quotamonitori::{
+use quotamonitor::{
     engine::{Command, Event, Status, ViewState, Worker},
     rpc::Rpc,
     runtime::BackendCommand,
@@ -13,10 +13,7 @@ use std::{
 };
 
 fn root() -> PathBuf {
-    let p = std::env::temp_dir().join(format!(
-        "quotamonitori-integration-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let p = std::env::temp_dir().join(format!("quotamonitor-integration-{}", uuid::Uuid::new_v4()));
     store::ensure_private_dir(&p).unwrap();
     p
 }

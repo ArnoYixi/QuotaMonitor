@@ -1,2 +1,2 @@
 @echo off
-start "" "%~dp0QuotaMonitori.exe" --demo
+start "" "%~dp0QuotaMonitor.exe" --demo

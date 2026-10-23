@@ -3,14 +3,14 @@ mod desktop;
 mod platform;
 mod ui;
 use eframe::egui;
-use quotamonitori::store;
+use quotamonitor::store;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let Some(pair) = args.windows(2).find(|w| w[0] == "--self-test") {
         let result = self_test();
         let report = match &result {
             Ok(()) => {
-                serde_json::json!({"ok":true,"version":env!("CARGO_PKG_VERSION"),"runtime":quotamonitori::runtime::RUNTIME_VERSION,"checks":["bundle_sha256","extraction","child_process","initialize","account_read_logged_out"]})
+                serde_json::json!({"ok":true,"version":env!("CARGO_PKG_VERSION"),"runtime":quotamonitor::runtime::RUNTIME_VERSION,"checks":["bundle_sha256","extraction","child_process","initialize","account_read_logged_out"]})
             }
             Err(e) => serde_json::json!({"ok":false,"error":e}),
         };
@@ -26,9 +26,9 @@ fn main() {
     }
 }
 fn self_test() -> Result<(), String> {
-    use quotamonitori::{rpc::Rpc, runtime};
+    use quotamonitor::{rpc::Rpc, runtime};
     use std::sync::{Arc, atomic::AtomicBool};
-    let root = std::env::temp_dir().join(format!("quotamonitori-probe-{}", uuid::Uuid::new_v4()));
+    let root = std::env::temp_dir().join(format!("quotamonitor-probe-{}", uuid::Uuid::new_v4()));
     let result = (|| {
         let backend = runtime::resolve(&root, "")?;
         let mut rpc = Rpc::spawn(
@@ -73,8 +73,12 @@ fn run() -> Result<(), String> {
         settings.view = w[1].clone();
     }
     settings.validate()?;
+    if settings.autostart && !demo {
+        let exe = std::env::current_exe().map_err(|_| "无法定位程序".to_string())?;
+        platform::autostart(true, &exe)?;
+    }
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("QuotaMonitori · 额度监听")
+        .with_title("QuotaMonitor · 额度监听")
         .with_decorations(false)
         .with_transparent(true)
         .with_has_shadow(false)

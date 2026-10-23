@@ -124,9 +124,26 @@ impl Default for ResetJournal {
 }
 
 pub fn default_dir() -> PathBuf {
-    directories::ProjectDirs::from("com", "ArnoYixi", "QuotaMonitori")
+    let preferred = directories::ProjectDirs::from("com", "ArnoYixi", "QuotaMonitor")
         .map(|d| d.data_local_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("QuotaMonitori-data"))
+        .unwrap_or_else(|| PathBuf::from("QuotaMonitor-data"));
+    let legacy = directories::ProjectDirs::from("com", "ArnoYixi", "QuotaMonitori")
+        .map(|d| d.data_local_dir().to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("QuotaMonitori-data"));
+    compatible_data_dir(preferred, legacy)
+}
+
+fn compatible_data_dir(preferred: PathBuf, legacy: PathBuf) -> PathBuf {
+    // Official credential-store entries can depend on CODEX_HOME. Reuse an
+    // existing installation in place rather than moving account directories.
+    if !preferred.join("settings.json").exists()
+        && !preferred.join("accounts").exists()
+        && (legacy.join("settings.json").exists() || legacy.join("accounts").exists())
+    {
+        legacy
+    } else {
+        preferred
+    }
 }
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)?;
@@ -216,15 +233,39 @@ pub fn lock_instance(dir: &Path) -> Result<File, String> {
         .open(dir.join("instance.lock"))
         .map_err(|_| "无法打开进程锁")?;
     file.try_lock_exclusive()
-        .map_err(|_| "QuotaMonitori 已在运行，请从系统托盘打开。")?;
+        .map_err(|_| "QuotaMonitor 已在运行，请从系统托盘打开。")?;
     Ok(file)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renamed_app_reuses_existing_accounts_without_moving_them() {
+        let root = std::env::temp_dir().join(format!("quota-rename-{}", uuid::Uuid::new_v4()));
+        let preferred = root.join("QuotaMonitor");
+        let legacy = root.join("QuotaMonitori");
+        assert_eq!(
+            compatible_data_dir(preferred.clone(), legacy.clone()),
+            preferred
+        );
+        fs::create_dir_all(legacy.join("accounts")).unwrap();
+        fs::create_dir_all(&preferred).unwrap();
+        assert_eq!(
+            compatible_data_dir(preferred.clone(), legacy.clone()),
+            legacy
+        );
+        fs::write(preferred.join("settings.json"), "{}").unwrap();
+        assert_eq!(
+            compatible_data_dir(preferred.clone(), legacy.clone()),
+            preferred
+        );
+        assert!(legacy.join("accounts").is_dir());
+        fs::remove_dir_all(root).unwrap();
+    }
     fn temp() -> PathBuf {
-        std::env::temp_dir().join(format!("quotamonitori-test-{}", uuid::Uuid::new_v4()))
+        std::env::temp_dir().join(format!("quotamonitor-test-{}", uuid::Uuid::new_v4()))
     }
     #[test]
     fn pending_operation_survives_restart() {

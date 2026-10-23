@@ -32,18 +32,18 @@ jobs:
         run: |
           cargo +1.99.0 build --release --locked --target x86_64-pc-windows-msvc
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/x86_64-pc-windows-msvc/release/QuotaMonitori.exe dist/
-          Copy-Item README.md, LICENSE, THIRD-PARTY-NOTICES.md dist/
+          Copy-Item target/x86_64-pc-windows-msvc/release/QuotaMonitor.exe dist/
+          Copy-Item README.md, CONTRIBUTING.md, LICENSE, THIRD-PARTY-NOTICES.md dist/
           python scripts/collect_licenses.py
           Copy-Item -Recurse licenses, docs dist/
           Copy-Item assets/FONT-LICENSE.txt dist/licenses/
           Copy-Item scripts/Demo.bat dist/
-          (Get-FileHash dist/QuotaMonitori.exe -Algorithm SHA256).Hash | Out-File dist/SHA256.txt
+          (Get-FileHash dist/QuotaMonitor.exe -Algorithm SHA256).Hash | Out-File dist/SHA256.txt
       - name: Verify bundled Windows runtime
         shell: pwsh
         run: |
           $report = Join-Path $pwd 'dist/self-test.json'
-          $p = Start-Process -FilePath 'dist/QuotaMonitori.exe' -ArgumentList @('--self-test', $report) -PassThru
+          $p = Start-Process -FilePath 'dist/QuotaMonitor.exe' -ArgumentList @('--self-test', $report) -WindowStyle Hidden -PassThru
           if (-not $p.WaitForExit(60000)) { $p.Kill(); throw 'Runtime self-test timed out' }
           if ($p.ExitCode -ne 0) { Get-Content $report -ErrorAction SilentlyContinue; throw 'Runtime self-test failed' }
           Get-Content $report
@@ -55,7 +55,7 @@ jobs:
         run: |
           $renderer = Split-Path $env:QUOTA_GUI_EXE -Parent
           Copy-Item (Join-Path $renderer '*.dll') target/debug/deps/ -Force
-          cargo +1.99.0 test --locked --bin QuotaMonitori desktop::tests::event_loop_unlocks_and_exits_when_rendering_is_disabled -- --ignored --exact
+          cargo +1.99.0 test --locked --bin QuotaMonitor desktop::tests::event_loop_unlocks_and_exits_when_rendering_is_disabled -- --ignored --exact
       - name: Verify adaptive backdrop on solid and textured backgrounds
         shell: pwsh
         run: ./scripts/test-backdrop.ps1
@@ -70,7 +70,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: QuotaMonitori-windows-x64-static
+          name: QuotaMonitor-windows-x64-static
           path: dist/
           compression-level: 0
           retention-days: 30
@@ -95,8 +95,8 @@ jobs:
         run: cargo +1.99.0 build --release --locked
       - uses: actions/upload-artifact@v4
         with:
-          name: QuotaMonitori-linux-x64
-          path: target/release/QuotaMonitori
+          name: QuotaMonitor-linux-x64
+          path: target/release/QuotaMonitor
           compression-level: 0
           retention-days: 30
 

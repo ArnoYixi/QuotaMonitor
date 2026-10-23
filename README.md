@@ -1,117 +1,116 @@
-# QuotaMonitori
+# QuotaMonitor
 
-原生桌面悬浮额度监视器。面向通过 OpenAI 账号登录的 **Codex 订阅额度和重置卡**，支持多个账号。Rust + egui，中文界面，不依赖 Electron、浏览器内核或 Python 运行环境。
+轻量的桌面悬浮额度监视器，用于查看多个 Codex 账号的剩余额度、积分和重置卡。中文界面，支持横条、圆环、拖动定位与系统托盘。
 
-### 0.1.5 托盘控制与紧凑悬浮
+[下载最新版](https://github.com/ArnoYixi/QuotaMonitor/releases/latest) · [报告问题](https://github.com/ArnoYixi/QuotaMonitor/issues) · [参与开发](CONTRIBUTING.md)
 
-主界面在平坦背景上完全透明，显示账号名、额度图形与百分比。名称后按 `*3重置卡 *200积分` 显示已有卡片和积分；为零或未知时省略对应项目，不合并重复额度桶的积分。文字暂时去掉黑白描边。Windows 检测到图标、照片等复杂背景时，每个账号自动增加柔和的半透明圆角衬底，强度随背景变化、最高约 58%；回到纯色背景后淡出。衬底根据文字和进度图形的实际高度计算，左右各留 8、上下各留 6 个逻辑像素，不再为底部重置按钮预留空白。
+本项目由社区独立开发，与 OpenAI 无隶属或背书关系。额度和可用功能以账号实际返回的数据为准。
 
-按住账号文字或进度条即可拖动。悬浮窗右键固定提供「使用重置卡」「锁定悬浮」「打开菜单」「退出」；未耗尽或没有可用卡时，重置项禁用。选择「打开菜单」进入设置，按 Esc 或「返回」收起。完整卡片明细、恢复时间与错误详情可在账号管理中的「详情」查看。设置中的不透明度仅影响设置面板。
+## 界面预览
 
-靠近屏幕顶部或底部时账号横向并排，靠左右边缘时纵向排列，超出屏幕宽度时自动换行。Windows 按当前显示器工作区定位，越界后松手会拉回。额度采用鲜明的绿、黄、橙、红渐变。Windows 每秒从各账号周围的透明间隙读取至多 80 个背景颜色点，同时分析明暗与颜色变化，自动切换黑白字和衬底；采样不包含自身文字、进度条或衬底，带防抖和渐变，不保存或传输屏幕图像。Linux 使用主题文字；Wayland 的定位能力取决于合成器。
+实际使用截图：两个账号均命名为 `arnoyix`，剩余额度分别为 **78%** 和 **6%**，第二个账号显示 **60325 积分**。
 
-Windows 不显示任务栏窗口标签，仅保留托盘图标。锁定后整个悬浮窗穿透鼠标，文字、进度条和衬底都不会阻挡下方应用的点击；悬浮窗也不能拖动或打开自己的右键菜单。**只能右键任务栏通知区域的托盘图标，选择「解锁悬浮」解除锁定**，左键图标不会解锁。锁定状态会保存并在重启后恢复；无可用托盘时不允许锁定。托盘同时提供显示、隐藏、刷新、打开菜单和退出。
+![深色背景下的横向悬浮窗](docs/images/user-reference.png)
 
-积分在悬浮窗和详情页统一向上取整，不保留小数，例如 `1.2 → 2`、`0.0004 → 1`、`200.000 → 200`；仅调整显示，保留服务端原始数据。
+下面的参考图由程序的实际界面组件渲染，固定使用上图的数据，用于展示不同布局和外观，不表示实时额度。
 
-Windows 托盘菜单在右键松开后打开，使用独立的可交互窗口承载；悬浮窗锁定或隐藏时仍可操作菜单、解锁和退出。
+| 纵向横条 | 横向圆环 |
+| --- | --- |
+| ![纵向横条：78%、6%、60325 积分](docs/images/bars-vertical.png) | ![横向圆环：78%、6%、60325 积分](docs/images/rings-horizontal.png) |
 
-托盘指令、后台结果和设置保存由应用事件循环处理，不再等界面绘制。Windows 解锁直接取消鼠标穿透，无需隐藏再显示；隐藏时刷新和解锁保持隐藏，退出仍正常保存设置并关闭后台组件。横条和圆环的黑色外描边已移除。
+浅色背景：
 
-## 使用
+![浅色背景横向横条：78%、6%、60325 积分](docs/images/bars-light.png)
 
-Windows x64 完整版：双击 `QuotaMonitori.exe` → 添加账号 → 在官方浏览器页面登录。可以逐个添加多个账号；登录时请确认浏览器选中了想添加的账号。支持设备码登录。
+## 功能
 
-- 按住账号名或进度图形拖动窗口，默认置顶；右键显示重置、锁定、打开菜单和退出。
-- 横条 / 圆环切换，绿色 → 黄色 → 橙色 → 红色连续渐变。
-- 设置中选择 10 秒 / 30 秒刷新、透明度、缩放、浅色外观和开机启动。
-- 主界面显示该账号最紧张周期的额度。打开菜单 → 管理账号 → 详情，查看各周期、恢复时间、点数和重置卡。
-- 额度耗尽时右键该账号，选择「使用重置卡」，程序自动使用**最早到期的可用卡**。无到期日的卡排在最后；已过期卡不会被选中。
-- 关闭窗口后留在系统托盘；托盘可恢复窗口、刷新和退出。没有可用托盘服务时，关闭即退出。
-- 账号管理支持改名、排列、隐藏、暂停监测和退出登录。
+- **多账号监测**：独立登录、改名、排序、隐藏或暂停监测；在详情页查看各额度周期和恢复时间。
+- **桌面悬浮**：横条与圆环两种样式，支持缩放、置顶和拖动。靠近顶部或底部时横向排列，靠近左右边缘时纵向排列。
+- **自适应外观**：Windows 下根据背景调整文字颜色；复杂背景下自动添加柔和衬底，纯色背景保持透明。
+- **托盘控制**：显示、隐藏、刷新、设置、锁定与退出。锁定后悬浮窗穿透鼠标，托盘仍可直接解锁和退出。
+- **积分与重置卡**：积分向上取整，不显示小数。重置操作需手动触发，并优先选择最早到期的可用卡。
+- **本地运行**：Rust + egui 原生程序；Windows 发布包包含所需登录组件，无需另装 Python、Node.js 或 Codex CLI。
 
-### 无需账号的验收模式
+## 下载与使用
+
+1. 在 [Releases](https://github.com/ArnoYixi/QuotaMonitor/releases) 下载 `QuotaMonitor-v版本号-windows-x64.zip`。
+2. 解压到固定目录，双击 `QuotaMonitor.exe`。
+3. 选择添加账号，在官方登录页面完成登录。可依次添加多个账号，登录时确认浏览器使用的是目标账号。
+4. 拖动账号名或进度图形调整位置；右键悬浮窗，选择“打开菜单”管理账号和外观。
+
+Windows 发布包面向 Windows 10 / 11 x64，需要支持 OpenGL 的图形驱动。程序尚未进行代码签名。
+
+### 常用操作
+
+| 操作 | 方法 |
+| --- | --- |
+| 切换横条 / 圆环、刷新间隔、缩放 | 打开菜单 → 设置 |
+| 查看各周期、恢复时间、积分明细 | 打开菜单 → 管理账号 → 详情 |
+| 锁定悬浮窗 | 右键悬浮窗或托盘图标 → 锁定悬浮 |
+| 解锁悬浮窗 | **右键系统托盘图标 → 解锁悬浮** |
+| 隐藏 / 恢复窗口 | 使用托盘菜单；左键托盘图标可显示窗口 |
+| 完全退出 | 托盘菜单 → 退出 |
+
+锁定后，悬浮窗本身不接收鼠标操作。解锁立即生效，无需先隐藏再显示；左键托盘图标只显示窗口，不会解除锁定。关闭设置窗口会留在托盘，没有可用托盘时则退出。
+
+### 无需登录体验
+
+运行发布包中的 `Demo.bat`，或：
 
 ```powershell
-.\QuotaMonitori.exe --demo
+.\QuotaMonitor.exe --demo
 ```
 
-提供三个模拟账号、三种额度和不同到期日的卡：第一个显示 3 张卡和 200 积分，第二个没有卡和积分后缀，第三个耗尽且有 3 张卡、没有积分后缀。可切换视图、模拟耗尽、右键使用并检查卡片变化。演示模式明确标注，使用独立数据目录，不会连接真实账号或消耗真实卡片。发布包内附 `Demo.bat`。
+演示模式使用独立的模拟数据，不会登录账号或消耗重置卡；其动态演示数据与 README 的固定参考图不同。
 
-## 额度与重置规则
+## 数据与隐私
 
-1. 数据来自官方 Codex App Server；不是估算消息条数，也不代表 OpenAI API 美元余额或所有 ChatGPT 模型额度。
-2. 按服务端实际返回的周期显示，不预设一定是五小时或一周。服务端没有提供的数据显示「未知」或「—」。
-3. 每次重置前重新读取账号、额度和卡片。只有真实耗尽的 Codex 配额才能触发新的操作；显示取整成 0% 不等于耗尽。
-4. 在完整可用卡集合内，按到期时间、发放时间、卡片 ID 稳定排序。缺明细、明细数不匹配、到期字段缺失或类型未知时，暂不消耗。
-5. 重置前将 `idempotencyKey`、卡片 ID 和账号 ID 原子写入操作日志。超时或重启后，「核对重置」复用原操作，不换卡、不生成新操作编号。
-6. 未解决的操作不能移除账号；可以重新登录，但核对操作必须属于原账号。服务端不返回账号标识时暂停使用卡片。
-7. 重置成功后重新查询官方数据，不自行把进度改成 100%。仅点击才使用卡片，不在额度为零时无人值守自动扣卡。
-8. 网络错误显示最后已知数据；过期数据变灰。失败按指数退避，正常后恢复所选刷新频率。各账号分开轮询。
+- 通过官方 Codex App Server 获取账号信息与额度，不要求粘贴 Cookie 或 API Key。某个账号不支持的字段会显示为空或不可用；请求失败时保留缓存并标明状态。
+- 登录凭据交由官方组件及操作系统凭据库管理。可在设置中选择仅本次会话登录。
+- 设置、额度缓存和重置操作记录保存在本机。Windows 新安装的数据目录通常为 `%LOCALAPPDATA%\ArnoYixi\QuotaMonitor\data`；也可用 `--data-dir <目录>` 指定位置。
+- 从旧版 QuotaMonitori 升级时，会继续使用已有旧目录，保留账号与设置。已有开机启动项会更新为新程序路径。
+- 背景自适应只读取窗口周围少量颜色点，不保存或上传屏幕图像。
+- 重置卡属于账号资源；请在确认后手动使用。操作结果不明确时程序会先核对记录，避免重复提交。
 
-## 登录和本地数据
+## 从源码构建
 
-每个账号有独立的官方组件进程、状态目录及系统凭据条目。密码仅输入官方网页；本程序不读取浏览器 Cookie，也不会请求 API Key。默认强制使用系统凭据库；凭据库不可用时可在设置选择「仅本次会话」。此选项会在组件退出后失效，需要重新登录。
-
-设置、上次额度和重置操作日志保存在系统应用数据目录，可在设置中打开。Windows 通常为 `%LOCALAPPDATA%\ArnoYixi\QuotaMonitori\data`，以「打开数据目录」实际位置为准。Linux 遵循 XDG 目录。不要在有待核对重置操作时删除数据目录。
-
-程序只调用账号、登录、额度与重置方法，不创建模型会话或执行提示词。暂停账号会停止对应进程。大量同时监测的账号会增加官方组件的内存占用。
-
-## 完整版与静态编译
-
-Windows 完整版为单个 x64 EXE，内嵌经过 SHA-256 校验的官方 App Server 0.162.1。首次启动会将组件解压到用户数据目录；后续启动检查文件完整性。无需安装 Codex CLI、Node.js、Python、WebView2 或额外的 VC++ 运行库。
-
-主程序使用静态 CRT / Rust 依赖；仍然调用 Windows 自带的系统 DLL 和图形驱动。静态编译不意味着完全不加载系统 DLL。内嵌官方组件使完整 EXE 约 100 MB，运行时还需解压空间；原生界面本身较小。没有证书签名，需要由使用者按自己系统的应用信任规则处理。
-
-推荐 Windows 10 / 11 x64、支持 OpenGL 的显卡驱动。Linux 桌面源码可编译；需要 GTK3、AppIndicator、X11/Wayland 和 OpenGL。**Linux 版本不承诺全静态**；Wayland 合成器可能忽略窗口置顶或定位请求，稳定置顶优先使用 X11。Linux 托盘需要桌面的 AppIndicator 支持。
-
-## 源码构建
-
-固定官方组件版本和哈希在 `scripts/fetch_runtime.py` 与 `build.rs`。`Cargo.lock` 固定 Rust 依赖；CI 使用 Rust 1.99.0。
-
-Windows 原生构建（Rust MSVC 工具链和 Visual Studio C++ Build Tools）：
+构建环境：Rust 1.99.0；Windows 还需 Visual Studio C++ Build Tools 和 Windows SDK。Python 3 仅用于构建时下载组件与收集许可证。
 
 ```powershell
-rustup toolchain install 1.99.0 --profile minimal
-rustup default 1.99.0
+git clone https://github.com/ArnoYixi/QuotaMonitor.git
+cd QuotaMonitor
+rustup toolchain install 1.99.0 --profile minimal --component rustfmt
+rustup override set 1.99.0
 .\scripts\build-windows.ps1
 ```
 
-Linux 构建（Ubuntu / Debian）：
+输出位于 `dist/`。构建脚本会下载并校验固定版本的官方组件，版本与 SHA-256 记录在 `scripts/fetch_runtime.py` 和 `build.rs`。
+
+运行 `scripts/package-windows.ps1` 可进行内置组件自检并生成 ZIP 和校验和，输出位于 `dist/releases/v<版本>/`。
+
+Linux 源码构建：
 
 ```bash
-sudo apt-get install build-essential pkg-config libgtk-3-dev libayatana-appindicator3-dev libxdo-dev libxkbcommon-dev libssl-dev
-rustup toolchain install 1.99.0 --profile minimal
-rustup default 1.99.0
+sudo apt-get install libgtk-3-dev libayatana-appindicator3-dev libxdo-dev libxkbcommon-dev libssl-dev
 ./scripts/build-linux.sh
 ```
 
-开发版不打包组件，需在设置中指定已有 `codex-app-server` 或 `codex` 的绝对路径，或放入 PATH：
+Linux 的托盘、定位和窗口行为依赖桌面环境；Wayland 尤其受合成器限制。当前 Release 提供 Windows x64 包。
 
-```bash
-cargo run -- --demo
+开发调试与测试：
+
+```powershell
+cargo run --locked -- --demo
+cargo fmt --check
 cargo test --all-targets --locked
 ```
 
-跨平台 GUI 与系统集成在 `src/ui.rs` / `src/platform.rs`；账号工作线程在 `src/engine.rs`；协议在 `src/rpc.rs`；额度和选卡规则在 `src/model.rs`；原子持久化和重置日志在 `src/store.rs`。`tests/fake_codex.py` 是无网络故障注入服务，测试真实子进程协议。
+不打包官方组件的开发版本可在设置中指定本机 Codex CLI 路径。更多回归步骤见 [验收说明](docs/ACCEPTANCE.md)。
 
-GitHub Actions 对 Windows 和 Linux 分别测试构建，并提供构建产物。只打标签不会自动创建公开 Release。
+## 反馈与贡献
 
-## 验收与边界
+欢迎在 [Issues](https://github.com/ArnoYixi/QuotaMonitor/issues) 反馈问题或提出建议。请附系统版本、程序版本、复现步骤和已脱敏截图；不要提交账号凭据、Token 或完整个人数据目录。开发说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-见 [验收说明](docs/ACCEPTANCE.md)。本次开发没有使用真实用户凭据，真实多账号登录、服务端额度展示和实际扣卡需要用自己的账号验收；自动化测试覆盖协议与选卡、丢失响应、重启恢复和账号隔离。演示数据不作为真实接口验收结果。
+## 许可证
 
-官方接口会随服务演进，某些订阅或账号可能没有重置卡或完整明细。程序会明确显示未知状态，不用网页抓取或猜测接口填充数据。
-
-## 来源与许可证
-
-本项目 MIT；内置官方 Codex 组件遵循其 Apache-2.0 许可证及 NOTICE；字体遵循 SIL OFL。详见 [第三方说明](THIRD-PARTY-NOTICES.md)。
-
-- [OpenAI App Server 文档](https://learn.chatgpt.com/docs/app-server)
-- [固定版本官方组件](https://github.com/openai/codex/releases/tag/rust-v0.162.1)
-- [官方凭据存储实现](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/login/src/auth/storage.rs)
-
-非 OpenAI 官方产品。
-
-
-
+项目源码采用 [MIT License](LICENSE)。随包分发的官方 Codex 组件采用 Apache-2.0，字体采用 SIL Open Font License；其他依赖详见 [第三方声明](THIRD-PARTY-NOTICES.md) 和发布包中的 `licenses/`。

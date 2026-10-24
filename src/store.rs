@@ -43,11 +43,12 @@ pub struct Settings {
     pub codex_path: String,
     pub ephemeral_login: bool,
     pub position: Option<[f32; 2]>,
+    pub last_codex_account: Option<String>,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 3,
             accounts: vec![],
             view: "bar".into(),
             interval: 30,
@@ -60,13 +61,19 @@ impl Default for Settings {
             codex_path: String::new(),
             ephemeral_login: false,
             position: None,
+            last_codex_account: None,
         }
     }
 }
 impl Settings {
     pub fn validate(&mut self) -> Result<(), String> {
-        if self.schema_version != 1 {
+        if !(1..=3).contains(&self.schema_version) {
             return Err("设置来自更新版本，请升级程序".into());
+        }
+        if self.schema_version < 3 {
+            self.schema_version = 3;
+            self.codex_path.clear();
+            self.ephemeral_login = false;
         }
         let mut ids = std::collections::HashSet::new();
         for a in &self.accounts {
@@ -124,26 +131,14 @@ impl Default for ResetJournal {
 }
 
 pub fn default_dir() -> PathBuf {
-    let preferred = directories::ProjectDirs::from("com", "ArnoYixi", "QuotaMonitor")
-        .map(|d| d.data_local_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("QuotaMonitor-data"));
-    let legacy = directories::ProjectDirs::from("com", "ArnoYixi", "QuotaMonitori")
-        .map(|d| d.data_local_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("QuotaMonitori-data"));
-    compatible_data_dir(preferred, legacy)
-}
-
-fn compatible_data_dir(preferred: PathBuf, legacy: PathBuf) -> PathBuf {
-    // Official credential-store entries can depend on CODEX_HOME. Reuse an
-    // existing installation in place rather than moving account directories.
-    if !preferred.join("settings.json").exists()
-        && !preferred.join("accounts").exists()
-        && (legacy.join("settings.json").exists() || legacy.join("accounts").exists())
-    {
-        legacy
+    let name = if cfg!(target_os = "linux") {
+        "quotamonitor"
     } else {
-        preferred
-    }
+        "QuotaMonitor"
+    };
+    directories::BaseDirs::new()
+        .map(|d| d.data_local_dir().join(name))
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
     fs::create_dir_all(path)?;
@@ -156,6 +151,11 @@ pub fn ensure_private_dir(path: &Path) -> io::Result<()> {
 }
 /// Write+flush+atomic replace: a failed write cannot discard a pending redemption.
 pub fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(|_| "无法编码本地数据")?;
+    atomic_bytes(path, &bytes)
+}
+
+pub fn atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path.parent().ok_or("数据目录无效")?;
     ensure_private_dir(parent).map_err(|_| "无法创建数据目录")?;
     let temp = parent.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
@@ -168,7 +168,7 @@ pub fn atomic_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
             opts.mode(0o600);
         }
         let mut f = opts.open(&temp)?;
-        f.write_all(&serde_json::to_vec_pretty(value).map_err(io::Error::other)?)?;
+        f.write_all(bytes)?;
         f.sync_all()?;
         drop(f);
         #[cfg(not(windows))]
@@ -240,29 +240,30 @@ pub fn lock_instance(dir: &Path) -> Result<File, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn upgrade_switches_to_token_queries_and_preserves_accounts() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut settings: Settings = serde_json::from_value(serde_json::json!({"schema_version":1,"codex_path":"old-component.exe","accounts":[{"id":id,"alias":"保留账号"}],"position":[100,200]})).unwrap();
+        settings.validate().unwrap();
+        assert_eq!(settings.schema_version, 3);
+        assert!(settings.codex_path.is_empty());
+        assert_eq!(settings.accounts[0].id, id);
+        assert_eq!(settings.position, Some([100.0, 200.0]));
+    }
 
     #[test]
-    fn renamed_app_reuses_existing_accounts_without_moving_them() {
-        let root = std::env::temp_dir().join(format!("quota-rename-{}", uuid::Uuid::new_v4()));
-        let preferred = root.join("QuotaMonitor");
-        let legacy = root.join("QuotaMonitori");
+    fn storage_uses_the_application_folder_directly() {
+        let path = default_dir();
+        let base = directories::BaseDirs::new().unwrap();
+        assert_eq!(path.parent(), Some(base.data_local_dir()));
         assert_eq!(
-            compatible_data_dir(preferred.clone(), legacy.clone()),
-            preferred
+            path.file_name().unwrap(),
+            if cfg!(target_os = "linux") {
+                "quotamonitor"
+            } else {
+                "QuotaMonitor"
+            }
         );
-        fs::create_dir_all(legacy.join("accounts")).unwrap();
-        fs::create_dir_all(&preferred).unwrap();
-        assert_eq!(
-            compatible_data_dir(preferred.clone(), legacy.clone()),
-            legacy
-        );
-        fs::write(preferred.join("settings.json"), "{}").unwrap();
-        assert_eq!(
-            compatible_data_dir(preferred.clone(), legacy.clone()),
-            preferred
-        );
-        assert!(legacy.join("accounts").is_dir());
-        fs::remove_dir_all(root).unwrap();
     }
     fn temp() -> PathBuf {
         std::env::temp_dir().join(format!("quotamonitor-test-{}", uuid::Uuid::new_v4()))

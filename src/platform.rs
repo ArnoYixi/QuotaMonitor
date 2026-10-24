@@ -1,11 +1,16 @@
 use crate::desktop::Wake;
 use eframe::egui;
-use std::{path::Path, sync::mpsc::Sender};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex, mpsc::Sender},
+};
 #[cfg(not(windows))]
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{
+    CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TrayAction {
     Show,
     Hide,
@@ -14,11 +19,146 @@ pub enum TrayAction {
     ToggleLock,
     Quit,
     Available(bool),
+    SwitchCodex(String),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrayAccount {
+    pub id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub selected: bool,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrayState {
+    pub visible: bool,
+    pub locked: bool,
+    pub accounts: Vec<TrayAccount>,
+}
+impl Default for TrayState {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            locked: false,
+            accounts: vec![],
+        }
+    }
+}
+
+fn tray_items(state: &TrayState) -> Vec<(usize, &'static str, bool)> {
+    let mut items = vec![
+        if state.visible {
+            (2, "隐藏悬浮窗", true)
+        } else {
+            (1, "显示悬浮窗", true)
+        },
+        (3, "刷新全部", true),
+        (4, "打开菜单", true),
+        (
+            6,
+            if state.locked {
+                "解锁悬浮"
+            } else {
+                "锁定悬浮"
+            },
+            true,
+        ),
+    ];
+    if state.accounts.iter().any(|a| a.enabled) {
+        items.push((7, "切换 Codex 账号", true));
+    }
+    items.extend([(0, "", false), (5, "退出", true)]);
+    items
+}
+
+fn tray_command(command: usize, state: &TrayState) -> Option<TrayAction> {
+    match command {
+        1 => Some(TrayAction::Show),
+        2 => Some(TrayAction::Hide),
+        3 => Some(TrayAction::Refresh),
+        4 => Some(TrayAction::Settings),
+        5 => Some(TrayAction::Quit),
+        6 => Some(TrayAction::ToggleLock),
+        id if id >= 1000 => state
+            .accounts
+            .get(id - 1000)
+            .filter(|a| a.enabled)
+            .map(|a| TrayAction::SwitchCodex(a.id.clone())),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tray_state_tests {
+    use super::*;
+    #[test]
+    fn menu_only_offers_the_current_visibility_and_lock_action() {
+        for visible in [false, true] {
+            for locked in [false, true] {
+                let state = TrayState {
+                    visible,
+                    locked,
+                    accounts: vec![],
+                };
+                let items = tray_items(&state);
+                let visibility: Vec<_> = items
+                    .iter()
+                    .filter(|(id, _, _)| *id == 1 || *id == 2)
+                    .collect();
+                assert_eq!(visibility.len(), 1);
+                assert_eq!(
+                    visibility[0].1,
+                    if visible {
+                        "隐藏悬浮窗"
+                    } else {
+                        "显示悬浮窗"
+                    }
+                );
+                assert_eq!(
+                    items.iter().find(|(id, _, _)| *id == 6).unwrap().1,
+                    if locked {
+                        "解锁悬浮"
+                    } else {
+                        "锁定悬浮"
+                    }
+                );
+                assert!(!items.iter().any(|(id, _, _)| *id == 7));
+            }
+        }
+    }
+    #[test]
+    fn codex_menu_uses_account_ids_even_when_names_match() {
+        let state = TrayState {
+            accounts: vec![
+                TrayAccount {
+                    id: "first".into(),
+                    label: "same name".into(),
+                    enabled: false,
+                    selected: false,
+                },
+                TrayAccount {
+                    id: "second".into(),
+                    label: "same name".into(),
+                    enabled: true,
+                    selected: true,
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(tray_items(&state).iter().any(|(id, _, _)| *id == 7));
+        assert_eq!(tray_command(1000, &state), None);
+        assert_eq!(
+            tray_command(1001, &state),
+            Some(TrayAction::SwitchCodex("second".into()))
+        );
+        assert_eq!(tray_command(1002, &state), None);
+    }
 }
 #[derive(Default)]
 pub struct Tray {
     #[cfg(windows)]
     _icon: Option<TrayIcon>,
+    state: Arc<Mutex<TrayState>>,
 }
 pub fn icon_rgba(size: u32) -> Vec<u8> {
     let mut data = vec![0; (size * size * 4) as usize];
@@ -45,46 +185,26 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
     data
 }
 #[cfg(not(windows))]
-fn build_tray(tx: Sender<TrayAction>, wake: Wake) -> Result<TrayIcon, String> {
-    let menu = Menu::new();
-    let show = MenuItem::new("显示悬浮窗", true, None);
-    let hide = MenuItem::new("隐藏悬浮窗", true, None);
-    let refresh = MenuItem::new("刷新全部", true, None);
-    let settings = MenuItem::new("设置", true, None);
-    let lock = MenuItem::new("锁定 / 解锁悬浮", true, None);
-    let quit = MenuItem::new("退出 QuotaMonitor", true, None);
-    menu.append_items(&[
-        &show,
-        &hide,
-        &refresh,
-        &settings,
-        &lock,
-        &PredefinedMenuItem::separator(),
-        &quit,
-    ])
-    .map_err(|e| e.to_string())?;
-    let ids = [
-        show.id().clone(),
-        hide.id().clone(),
-        refresh.id().clone(),
-        settings.id().clone(),
-        lock.id().clone(),
-        quit.id().clone(),
-    ];
+fn build_tray(
+    tx: Sender<TrayAction>,
+    wake: Wake,
+    state: Arc<Mutex<TrayState>>,
+) -> Result<TrayIcon, String> {
+    let actions = Arc::new(Mutex::new(Vec::<(MenuId, TrayAction)>::new()));
+    let snapshot = state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let menu = portable_tray_menu(&snapshot, &actions)?;
     let event_tx = tx.clone();
     let event_wake = wake.clone();
+    let event_actions = actions.clone();
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-        if let Some(i) = ids.iter().position(|id| *id == event.id) {
-            let _ = event_tx.send(
-                [
-                    TrayAction::Show,
-                    TrayAction::Hide,
-                    TrayAction::Refresh,
-                    TrayAction::Settings,
-                    TrayAction::ToggleLock,
-                    TrayAction::Quit,
-                ][i],
-            );
+        let action = event_actions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|(id, _)| *id == event.id)
+            .map(|(_, a)| a.clone());
+        if let Some(action) = action {
+            let _ = event_tx.send(action);
             event_wake();
         }
     }));
@@ -102,17 +222,73 @@ fn build_tray(tx: Sender<TrayAction>, wake: Wake) -> Result<TrayIcon, String> {
         }
     }));
     let icon = tray_icon::Icon::from_rgba(icon_rgba(32), 32, 32).map_err(|e| e.to_string())?;
-    TrayIconBuilder::new()
+    let icon = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
         .with_tooltip("QuotaMonitor · 额度监听")
         .with_icon(icon)
         .build()
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "linux")]
+    {
+        let menu_icon = icon.clone();
+        let mut last = snapshot;
+        gtk::glib::timeout_add_local(std::time::Duration::from_millis(150), move || {
+            let current = state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if current != last {
+                if let Ok(menu) = portable_tray_menu(&current, &actions) {
+                    menu_icon.set_menu(Some(Box::new(menu)));
+                    last = current;
+                }
+            }
+            gtk::glib::ControlFlow::Continue
+        });
+    }
+    Ok(icon)
+}
+
+#[cfg(not(windows))]
+fn portable_tray_menu(
+    state: &TrayState,
+    actions: &Mutex<Vec<(MenuId, TrayAction)>>,
+) -> Result<Menu, String> {
+    let menu = Menu::new();
+    let mut ids = vec![];
+    for (id, label, enabled) in tray_items(state) {
+        if id == 0 {
+            menu.append_items(&[&PredefinedMenuItem::separator()])
+                .map_err(|e| e.to_string())?;
+            continue;
+        }
+        if id == 7 {
+            let submenu = Submenu::new(label, true);
+            for account in state.accounts.iter().filter(|a| a.enabled) {
+                let item = CheckMenuItem::new(&account.label, true, account.selected, None);
+                ids.push((
+                    item.id().clone(),
+                    TrayAction::SwitchCodex(account.id.clone()),
+                ));
+                submenu.append_items(&[&item]).map_err(|e| e.to_string())?;
+            }
+            menu.append_items(&[&submenu]).map_err(|e| e.to_string())?;
+            continue;
+        }
+        let item = MenuItem::new(label, enabled, None);
+        if let Some(action) = tray_command(id, state) {
+            ids.push((item.id().clone(), action));
+        }
+        menu.append_items(&[&item]).map_err(|e| e.to_string())?;
+    }
+    *actions.lock().unwrap_or_else(|e| e.into_inner()) = ids;
+    Ok(menu)
 }
 
 #[cfg(windows)]
-fn build_tray(tx: Sender<TrayAction>, wake: Wake) -> Result<TrayIcon, String> {
+fn build_tray(
+    tx: Sender<TrayAction>,
+    wake: Wake,
+    state: Arc<Mutex<TrayState>>,
+) -> Result<TrayIcon, String> {
     TrayIconEvent::set_event_handler(Some(move |event| {
         let action = match event {
             TrayIconEvent::Click {
@@ -124,7 +300,10 @@ fn build_tray(tx: Sender<TrayAction>, wake: Wake) -> Result<TrayIcon, String> {
                 button: MouseButton::Right,
                 button_state: MouseButtonState::Up,
                 ..
-            } => native_tray_menu(),
+            } => {
+                let snapshot = state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                native_tray_menu(&snapshot)
+            }
             _ => None,
         };
         if let Some(action) = action {
@@ -145,10 +324,6 @@ static OVERLAY_LOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 
 pub fn set_overlay_locked(locked: bool) {
     OVERLAY_LOCKED.store(locked, std::sync::atomic::Ordering::Relaxed);
-}
-
-pub fn overlay_locked() -> bool {
-    OVERLAY_LOCKED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[derive(Clone, Copy)]
@@ -186,36 +361,22 @@ pub fn overlay_menu(can_reset: bool, can_lock: bool) -> Option<OverlayAction> {
 }
 
 #[cfg(windows)]
-fn native_tray_menu() -> Option<TrayAction> {
-    let lock = if overlay_locked() {
-        "解锁悬浮"
-    } else {
-        "锁定悬浮"
-    };
-    match native_popup(
-        &[
-            (1, "显示悬浮窗", true),
-            (2, "隐藏悬浮窗", true),
-            (3, "刷新全部", true),
-            (4, "打开菜单", true),
-            (6, lock, true),
-            (0, "", false),
-            (5, "退出", true),
-        ],
-        true,
-    ) {
-        1 => Some(TrayAction::Show),
-        2 => Some(TrayAction::Hide),
-        3 => Some(TrayAction::Refresh),
-        4 => Some(TrayAction::Settings),
-        5 => Some(TrayAction::Quit),
-        6 => Some(TrayAction::ToggleLock),
-        _ => None,
-    }
+fn native_tray_menu(state: &TrayState) -> Option<TrayAction> {
+    let command = native_popup_with_accounts(&tray_items(state), true, &state.accounts);
+    tray_command(command.max(0) as usize, state)
 }
 
 #[cfg(windows)]
 fn native_popup(items: &[(usize, &str, bool)], tray_owner: bool) -> i32 {
+    native_popup_with_accounts(items, tray_owner, &[])
+}
+
+#[cfg(windows)]
+fn native_popup_with_accounts(
+    items: &[(usize, &str, bool)],
+    tray_owner: bool,
+    accounts: &[TrayAccount],
+) -> i32 {
     use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
     unsafe {
         // Both the locked overlay and tray-icon's hidden HWND are layered,
@@ -253,6 +414,27 @@ fn native_popup(items: &[(usize, &str, bool)], tray_owner: bool) -> i32 {
         for &(id, label, enabled) in items {
             if id == 0 {
                 AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+            } else if id == 7 && !accounts.is_empty() {
+                let submenu = CreatePopupMenu();
+                if submenu.is_null() {
+                    continue;
+                }
+                for (index, account) in accounts.iter().enumerate().filter(|(_, a)| a.enabled) {
+                    let label = account.label.replace('&', "&&");
+                    let label: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+                    let flags = MF_STRING
+                        | MF_ENABLED
+                        | if account.selected {
+                            MF_CHECKED
+                        } else {
+                            MF_UNCHECKED
+                        };
+                    AppendMenuW(submenu, flags, 1000 + index, label.as_ptr());
+                }
+                let text: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
+                if AppendMenuW(menu, MF_POPUP | MF_STRING, submenu as usize, text.as_ptr()) == 0 {
+                    DestroyMenu(submenu);
+                }
             } else {
                 let text: Vec<u16> = label.encode_utf16().chain(Some(0)).collect();
                 let flags = MF_STRING | if enabled { MF_ENABLED } else { MF_GRAYED };
@@ -1011,23 +1193,34 @@ fn sample_gutter(ctx: &egui::Context, rect: egui::Rect) -> Option<Vec<[u8; 3]>> 
 }
 
 impl Tray {
+    pub fn update(&self, state: TrayState) {
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = state;
+    }
+
+    #[cfg(test)]
+    pub fn state(&self) -> TrayState {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     pub fn start(tx: Sender<TrayAction>, wake: Wake) -> Self {
+        let state = Arc::new(Mutex::new(TrayState::default()));
         #[cfg(windows)]
         {
-            let icon = build_tray(tx.clone(), wake.clone()).ok();
+            let icon = build_tray(tx.clone(), wake.clone(), state.clone()).ok();
             let _ = tx.send(TrayAction::Available(icon.is_some()));
             wake();
-            Self { _icon: icon }
+            Self { _icon: icon, state }
         }
         #[cfg(target_os = "linux")]
         {
+            let thread_state = state.clone();
             std::thread::spawn(move || {
                 if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_none() || gtk::init().is_err() {
                     let _ = tx.send(TrayAction::Available(false));
                     wake();
                     return;
                 }
-                let icon = build_tray(tx.clone(), wake.clone()).ok();
+                let icon = build_tray(tx.clone(), wake.clone(), thread_state).ok();
                 let _ = tx.send(TrayAction::Available(icon.is_some()));
                 wake();
                 if icon.is_some() {
@@ -1035,13 +1228,13 @@ impl Tray {
                 }
                 drop(icon);
             });
-            Self {}
+            Self { state }
         }
         #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = tx.send(TrayAction::Available(false));
             wake();
-            Self {}
+            Self { state }
         }
     }
 }

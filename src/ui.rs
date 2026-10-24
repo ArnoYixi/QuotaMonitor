@@ -1,10 +1,11 @@
-use crate::platform::{self, Tray, TrayAction};
+use crate::platform::{self, Tray, TrayAccount, TrayAction, TrayState};
 use eframe::egui::{self, Color32, FontId, RichText, Sense, Stroke, Vec2};
 use quotamonitor::{
     engine::{self, Command, Event, Status, ViewState, Worker},
     model::{Quota, now, quota_color, remaining_text, time_label},
-    runtime::{self, BackendCommand},
+    runtime::{self, Backend},
     store::{self, AccountConfig, Settings},
+    token,
 };
 use std::{
     collections::HashMap,
@@ -24,7 +25,7 @@ enum Page {
     Detail(String),
 }
 enum Boot {
-    Ready(Result<BackendCommand, String>),
+    Ready(Result<Backend, String>),
 }
 pub struct App {
     dir: PathBuf,
@@ -34,7 +35,7 @@ pub struct App {
     page: Page,
     states: HashMap<String, ViewState>,
     workers: HashMap<String, Worker>,
-    backend: Option<BackendCommand>,
+    backend: Option<Backend>,
     events_tx: Sender<Event>,
     events_rx: Receiver<Event>,
     boot_rx: Receiver<Boot>,
@@ -53,6 +54,8 @@ pub struct App {
     last_demo_refresh: Instant,
     last_size: Vec2,
     need_login: Option<String>,
+    token_input: String,
+    switching_codex: Option<String>,
     context_account: Option<String>,
     edge: platform::Edge,
     columns: usize,
@@ -87,6 +90,15 @@ impl App {
         platform::set_overlay_locked(settings.lock_position);
         let tray = Tray::start(tray_tx, wake.clone());
         let mut states = HashMap::new();
+        let args: Vec<_> = std::env::args().collect();
+        let requested_login = if demo {
+            None
+        } else {
+            args.windows(2)
+                .find(|w| w[0] == "--login-account")
+                .map(|w| w[1].clone())
+                .filter(|id| settings.accounts.iter().any(|a| &a.id == id))
+        };
         if demo && settings.accounts.is_empty() {
             for alias in ["主账号", "备用账号", "工作账号"] {
                 settings.accounts.push(AccountConfig {
@@ -117,7 +129,10 @@ impl App {
             settings,
             demo,
             _lock: lock,
-            page: Page::Monitor,
+            page: requested_login
+                .clone()
+                .map(Page::Detail)
+                .unwrap_or(Page::Monitor),
             states,
             workers: HashMap::new(),
             backend: None,
@@ -136,13 +151,15 @@ impl App {
             notice: if demo {
                 "演示模式：所有数据与操作均为模拟".into()
             } else {
-                "正在准备官方登录组件…".into()
+                "正在准备额度查询…".into()
             },
             dirty: false,
             last_save: Instant::now(),
             last_demo_refresh: Instant::now(),
             last_size: Vec2::ZERO,
-            need_login: None,
+            need_login: requested_login,
+            token_input: String::new(),
+            switching_codex: None,
             context_account: None,
             edge: platform::Edge::Free,
             columns: 1,
@@ -153,6 +170,7 @@ impl App {
             context_open: false,
         };
         app.apply_style(&cc.egui_ctx);
+        app.sync_tray();
         app.save();
         app
     }
@@ -196,6 +214,11 @@ impl App {
                 self.events_tx.clone(),
                 self.wake.clone(),
             );
+            if self.settings.last_codex_account.as_deref() == Some(id) {
+                if let Ok(path) = token::codex_auth_path() {
+                    w.send(Command::SetSharedCodex(Some(path)));
+                }
+            }
             self.workers.insert(id.into(), w);
         }
     }
@@ -213,7 +236,7 @@ impl App {
             }
             worker.send(cmd);
         } else {
-            self.notice = "官方组件尚未准备好，请在设置中检查".into();
+            self.notice = "查询尚未准备好，请在设置中检查".into();
         }
     }
     fn demo_command(&mut self, id: &str, cmd: Command) {
@@ -269,6 +292,53 @@ impl App {
             self.send(&id, Command::Refresh);
         }
     }
+    fn switch_codex(&mut self, id: &str) {
+        if self.demo {
+            self.notice = "演示模式不修改 Codex 登录信息".into();
+            return;
+        }
+        if self.switching_codex.is_some() {
+            self.notice = "正在切换 Codex 账号，请稍候".into();
+            return;
+        }
+        match token::codex_auth_path() {
+            Ok(path) => {
+                if let Some(worker) = self.workers.get(id) {
+                    self.switching_codex = Some(id.into());
+                    worker.send(Command::SwitchCodex(path));
+                } else {
+                    self.notice = "账号尚未准备完成，请稍后重试".into();
+                }
+            }
+            Err(message) => self.notice = message,
+        }
+    }
+
+    fn sync_tray(&self) {
+        let accounts = self
+            .settings
+            .accounts
+            .iter()
+            .enumerate()
+            .map(|(index, a)| {
+                let ready = self.states.get(&a.id).is_some_and(|s| {
+                    s.quota.is_some()
+                        && !matches!(s.status, Status::LoggedOut | Status::WaitingLogin)
+                });
+                TrayAccount {
+                    id: a.id.clone(),
+                    label: format!("{}. {}", index + 1, a.alias),
+                    enabled: !self.demo && self.switching_codex.is_none() && ready,
+                    selected: self.settings.last_codex_account.as_ref() == Some(&a.id),
+                }
+            })
+            .collect();
+        self._tray.update(TrayState {
+            visible: self.visible,
+            locked: self.settings.lock_position,
+            accounts,
+        });
+    }
     fn add(&mut self) {
         if self
             .states
@@ -299,6 +369,7 @@ impl App {
         if self.demo {
             return;
         }
+        self.token_input.clear();
         if self.backend.is_some() {
             self.send(&id, Command::Login { device: false });
         } else {
@@ -349,7 +420,8 @@ impl App {
                     if !self.settings.accounts.iter().any(|a| a.id == s.id) {
                         continue;
                     }
-                    if s.quota.is_none() && s.status != Status::LoggedOut {
+                    if s.quota.is_none() && !matches!(s.status, Status::LoggedOut | Status::Syncing)
+                    {
                         if let Some(old) = self.states.get(&s.id) {
                             s.quota = old.quota.clone();
                         }
@@ -366,11 +438,46 @@ impl App {
                     }
                 }
                 Event::Removed(id) => {
+                    if self.settings.last_codex_account.as_ref() == Some(&id) {
+                        self.settings.last_codex_account = None;
+                    }
                     self.workers.remove(&id);
                     self.states.remove(&id);
                     self.settings.accounts.retain(|a| a.id != id);
                     self.page = Page::Accounts;
                     self.dirty = true;
+                }
+                Event::CodexSwitched { id, result } => {
+                    self.switching_codex = None;
+                    match result {
+                        Ok(_) => {
+                            for (worker_id, worker) in &self.workers {
+                                if worker_id != &id {
+                                    worker.send(Command::SetSharedCodex(None));
+                                }
+                            }
+                            let alias = self
+                                .settings
+                                .accounts
+                                .iter()
+                                .find(|a| a.id == id)
+                                .map(|a| a.alias.as_str())
+                                .unwrap_or("所选账号");
+                            self.notice = format!(
+                                "已将「{alias}」写入 Codex auth.json，重新打开 Codex 后载入。"
+                            );
+                            self.settings.last_codex_account = Some(id);
+                            self.dirty = true;
+                            self.save();
+                        }
+                        Err(message) => {
+                            self.notice = format!("切换 Codex 失败：{message}");
+                            self.context_account = Some(id);
+                            self.page = Page::Settings;
+                            self.visible = true;
+                            self.reveal = true;
+                        }
+                    }
                 }
             }
         }
@@ -402,6 +509,7 @@ impl App {
                     self.save();
                 }
                 TrayAction::Refresh => self.refresh_all(),
+                TrayAction::SwitchCodex(id) => self.switch_codex(&id),
                 TrayAction::Quit => {
                     self.quitting = true;
                 }
@@ -422,6 +530,7 @@ impl App {
         if self.dirty && self.last_save.elapsed() > Duration::from_secs(2) {
             self.save();
         }
+        self.sync_tray();
     }
 
     pub fn sync_window(&mut self, ctx: &egui::Context) {
@@ -448,6 +557,7 @@ impl App {
         } else {
             self.quitting = true;
         }
+        self.sync_tray();
     }
     fn overlay_interaction(&mut self, r: &egui::Response, account: Option<&str>) {
         if account.is_some()
@@ -625,6 +735,9 @@ impl App {
     }
 
     fn can_reset(&self, id: &str) -> bool {
+        if self.token_mode() {
+            return false;
+        }
         self.states.get(id).is_some_and(|state| {
             state.status != Status::Resetting
                 && (state.pending
@@ -804,7 +917,15 @@ impl App {
         let stale = state.is_none_or(|s| s.status != Status::Ready)
             || quota.is_none_or(|q| q.stale(now(), self.settings.interval));
         let (name, suffix) = self.heading(account);
-        let percentage = p.map(remaining_text).unwrap_or("—".into());
+        let percentage = p
+            .map(remaining_text)
+            .unwrap_or_else(|| match state.map(|s| &s.status) {
+                Some(Status::LoggedOut) => "请登录".into(),
+                Some(Status::WaitingLogin) => "登录中".into(),
+                Some(Status::Syncing) => "查询中".into(),
+                Some(Status::Error) => "失败".into(),
+                _ => "—".into(),
+            });
         let suffix_width = ui.fonts_mut(|fonts| {
             fonts
                 .layout_no_wrap(suffix.clone(), FontId::proportional(13.0), Color32::WHITE)
@@ -906,7 +1027,7 @@ impl App {
             self.add();
         }
         ui.label(
-            RichText::new("每个账号独立登录；请在官方页面核对所选账号。")
+            RichText::new("点击账号详情中的浏览器登录；网页登录完成后自动导入 token 并查询额度。")
                 .small()
                 .weak(),
         );
@@ -929,22 +1050,56 @@ impl App {
         }
         ui.label(&s.message);
         ui.add_space(4.0);
+        if self.token_mode() {
+            ui.label(
+                RichText::new(
+                    "在官方网页完成登录即可，无需查找本机文件。登录后会自动保存 token 并刷新额度。",
+                )
+                .small()
+                .weak(),
+            );
+            ui.collapsing("手动导入已有 token", |ui| {
+                ui.label("access token / token JSON");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.token_input)
+                        .password(true)
+                        .desired_width(f32::INFINITY),
+                );
+                if ui
+                    .add_enabled(
+                        !self.token_input.trim().is_empty(),
+                        egui::Button::new("导入 token"),
+                    )
+                    .clicked()
+                {
+                    let raw = std::mem::take(&mut self.token_input);
+                    self.send(id, Command::UseToken(raw));
+                }
+            });
+        }
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(
-                    s.status != Status::WaitingLogin && s.status != Status::Resetting,
+                    !matches!(
+                        s.status,
+                        Status::WaitingLogin | Status::Syncing | Status::Resetting
+                    ),
                     egui::Button::new("浏览器登录"),
                 )
                 .clicked()
             {
                 self.send(id, Command::Login { device: false });
             }
-            if ui
-                .add_enabled(
-                    s.status != Status::WaitingLogin && s.status != Status::Resetting,
-                    egui::Button::new("设备码登录"),
-                )
-                .clicked()
+            if !self.token_mode()
+                && ui
+                    .add_enabled(
+                        !matches!(
+                            s.status,
+                            Status::WaitingLogin | Status::Syncing | Status::Resetting
+                        ),
+                        egui::Button::new("设备码登录"),
+                    )
+                    .clicked()
             {
                 self.send(id, Command::Login { device: true });
             }
@@ -1042,29 +1197,36 @@ impl App {
                 }
             }
             ui.label(
-                RichText::new("点击使用时，自动选择最早到期的一张。")
-                    .small()
-                    .weak(),
+                RichText::new(if self.token_mode() {
+                    "当前仅查询额度，重置卡请在官方客户端使用。"
+                } else {
+                    "点击使用时，自动选择最早到期的一张。"
+                })
+                .small()
+                .weak(),
             );
             let choice = q.choose_card(now());
             let eligible = s.status == Status::Ready
                 && !q.stale(now(), self.settings.interval)
                 && choice.is_ok();
-            if ui
-                .add_enabled(
-                    (eligible || s.pending) && s.status != Status::Resetting,
-                    egui::Button::new(if s.pending {
-                        "核对上次重置（不会重复扣卡）"
-                    } else {
-                        "使用 1 张最早到期卡"
-                    }),
-                )
-                .clicked()
+            if !self.token_mode()
+                && ui
+                    .add_enabled(
+                        (eligible || s.pending) && s.status != Status::Resetting,
+                        egui::Button::new(if s.pending {
+                            "核对上次重置（不会重复扣卡）"
+                        } else {
+                            "使用 1 张最早到期卡"
+                        }),
+                    )
+                    .clicked()
             {
                 self.send(id, Command::Reset);
             }
-            if let Err(reason) = choice {
-                ui.label(RichText::new(reason).small().weak());
+            if !self.token_mode() {
+                if let Err(reason) = choice {
+                    ui.label(RichText::new(reason).small().weak());
+                }
             }
         }
         if self.demo && ui.button("模拟额度耗尽").clicked() {
@@ -1080,7 +1242,11 @@ impl App {
         if ui
             .add_enabled(
                 !s.pending && s.status != Status::Resetting,
-                egui::Button::new("退出登录并移除此账号"),
+                egui::Button::new(if self.token_mode() {
+                    "移除此账号"
+                } else {
+                    "退出登录并移除此账号"
+                }),
             )
             .clicked()
         {
@@ -1135,32 +1301,35 @@ impl App {
             }
         }
         ui.separator();
-        ui.label("登录保存方式");
-        ui.checkbox(
-            &mut self.settings.ephemeral_login,
-            "仅本次会话（适用于系统凭据库不可用）",
-        );
-        ui.label(
-            RichText::new("默认由官方组件将登录信息保存到系统凭据库。")
-                .small()
-                .weak(),
-        );
-        ui.label("官方组件路径（完整版本可留空）");
-        ui.text_edit_singleline(&mut self.settings.codex_path);
-        if ui.button("重新加载组件与登录设置").clicked() {
-            self.workers.clear();
-            self.backend = None;
-            let root = self.dir.clone();
-            let path = self.settings.codex_path.clone();
-            let (tx, rx) = mpsc::channel();
-            self.boot_rx = rx;
-            let wake = self.wake.clone();
-            self.notice = "正在准备官方组件…".into();
-            std::thread::spawn(move || {
-                let _ = tx.send(Boot::Ready(runtime::resolve(&root, &path)));
-                wake();
-            });
-        }
+        ui.label("默认直接使用已有 token 查询，不下载组件、插件或模型目录。");
+        ui.collapsing("兼容旧版登录方式", |ui| {
+            ui.label("登录保存方式");
+            ui.checkbox(
+                &mut self.settings.ephemeral_login,
+                "仅本次会话（适用于系统凭据库不可用）",
+            );
+            ui.label(
+                RichText::new("默认由官方组件将登录信息保存到系统凭据库。")
+                    .small()
+                    .weak(),
+            );
+            ui.label("本机 Codex 可执行文件完整路径（留空使用 token 查询）");
+            ui.text_edit_singleline(&mut self.settings.codex_path);
+            if ui.button("重新加载组件与登录设置").clicked() {
+                self.workers.clear();
+                self.backend = None;
+                let root = self.dir.clone();
+                let path = self.settings.codex_path.clone();
+                let (tx, rx) = mpsc::channel();
+                self.boot_rx = rx;
+                let wake = self.wake.clone();
+                self.notice = "正在准备额度查询…".into();
+                std::thread::spawn(move || {
+                    let _ = tx.send(Boot::Ready(runtime::resolve(&root, &path)));
+                    wake();
+                });
+            }
+        });
         ui.separator();
         ui.horizontal_wrapped(|ui| {
             if ui.button("管理账号").clicked() {
@@ -1172,15 +1341,19 @@ impl App {
                 )));
                 self.settings.position = None;
             }
-            if ui.button("打开数据目录").clicked() {
+            if ui.button("打开保存位置").clicked() {
                 let _ = open::that(&self.dir);
             }
         });
         ui.label(
             RichText::new(format!(
-                "QuotaMonitor {} · 官方组件 {}",
+                "QuotaMonitor {} · {}",
                 env!("CARGO_PKG_VERSION"),
-                runtime::RUNTIME_VERSION
+                if self.token_mode() {
+                    "已有 token 查询"
+                } else {
+                    "本机 Codex 组件"
+                }
             ))
             .small()
             .weak(),
@@ -1212,6 +1385,13 @@ impl App {
         if before.light_theme != self.settings.light_theme {
             self.apply_style(ctx);
         }
+    }
+    fn token_mode(&self) -> bool {
+        !self.demo
+            && self.backend.as_ref().map_or(
+                self.settings.codex_path.trim().is_empty(),
+                Backend::uses_tokens,
+            )
     }
 }
 impl eframe::App for App {
@@ -1432,6 +1612,8 @@ pub(crate) mod layout_tests {
             last_size: Vec2::ZERO,
             need_login: None,
             context_account: None,
+            token_input: String::new(),
+            switching_codex: None,
             edge: platform::Edge::Free,
             columns: 1,
             was_monitor: true,
@@ -1618,6 +1800,86 @@ pub(crate) mod layout_tests {
     }
 
     #[test]
+    fn saved_login_queries_quota_without_showing_the_previous_identity_balance() {
+        let ctx = egui::Context::default();
+        let mut app = fixture(&ctx, "bar");
+        let id = app.settings.accounts[0].id.clone();
+        assert!(app.states[&id].quota.is_some());
+        let mut state = ViewState::new(id.clone(), None);
+        state.status = Status::Syncing;
+        state.message = "登录已保存，正在查询额度".into();
+        app.events_tx.send(Event::State(state)).unwrap();
+        app.poll(&ctx);
+        assert_eq!(app.states[&id].status, Status::Syncing);
+        assert!(app.states[&id].quota.is_none());
+        assert!(app.settings.accounts[0].cached.is_none());
+        let dir = app.dir.clone();
+        drop(app);
+        if dir.exists() {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn token_entry_is_masked_and_form_fits_the_settings_panel() {
+        let ctx = egui::Context::default();
+        let mut app = fixture(&ctx, "bar");
+        app.demo = false;
+        app.backend = Some(Backend::Token);
+        app.token_input = "sample-private-access-token".into();
+        let id = app.settings.accounts[0].id.clone();
+        let mut state = ViewState::new(id.clone(), None);
+        state.status = Status::LoggedOut;
+        state.message = "请点击浏览器登录，登录后自动查询额度".into();
+        app.states.insert(id.clone(), state);
+        let output = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(360.0, 650.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE.inner_margin(12))
+                    .show(ctx, |ui| app.detail(ui, &id));
+            },
+        );
+        let texts: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|s| {
+                if let egui::Shape::Text(t) = &s.shape {
+                    Some(t)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(!texts.is_empty());
+        assert!(texts.iter().any(|t| t.galley.job.text == "浏览器登录"));
+        assert!(
+            texts
+                .iter()
+                .all(|t| !t.galley.job.text.contains("auth.json"))
+        );
+        assert!(
+            texts
+                .iter()
+                .all(|t| !t.galley.job.text.contains("sample-private-access-token"))
+        );
+        for shape in &output.shapes {
+            if let egui::Shape::Text(text) = &shape.shape {
+                let visible = egui::Rect::from_min_size(text.pos, text.galley.size())
+                    .intersect(shape.clip_rect);
+                assert!(visible.right() <= 360.5 && visible.bottom() <= 650.5);
+            }
+        }
+        assert!(!app.can_reset(&id));
+    }
+
+    #[test]
     fn hidden_controls_and_backend_events_are_processed_without_drawing() {
         let dir = std::env::temp_dir().join(format!("quota-control-{}", uuid::Uuid::new_v4()));
         let ctx = egui::Context::default();
@@ -1634,6 +1896,7 @@ pub(crate) mod layout_tests {
         tx.send(TrayAction::ToggleLock).unwrap();
         app.poll(&ctx);
         assert!(!app.visible && app.settings.lock_position);
+        assert!(!app._tray.state().visible && app._tray.state().locked);
         assert!(store::load_settings(&dir).unwrap().lock_position);
         tx.send(TrayAction::Refresh).unwrap();
         app.poll(&ctx);
@@ -1642,11 +1905,13 @@ pub(crate) mod layout_tests {
         tx.send(TrayAction::ToggleLock).unwrap();
         app.poll(&ctx);
         assert!(!app.settings.lock_position && !app.visible);
+        assert!(!app._tray.state().visible && !app._tray.state().locked);
         assert!(!store::load_settings(&dir).unwrap().lock_position);
         tx.send(TrayAction::ToggleLock).unwrap();
         tx.send(TrayAction::Settings).unwrap();
         app.poll(&ctx);
         assert!(app.settings.lock_position && app.page == Page::Settings && app.visible);
+        assert!(app._tray.state().visible && app._tray.state().locked);
         tx.send(TrayAction::Show).unwrap();
         app.poll(&ctx);
         assert!(app.settings.lock_position && app.page == Page::Monitor);

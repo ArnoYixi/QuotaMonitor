@@ -174,7 +174,9 @@ try {
     Assert-Locked $true
     Tray '打开菜单'
     Assert-Locked $false
-    Tray '显示悬浮窗'
+    # A visible window has no Show command; left-click returns to Monitor.
+    [BackdropNative]::PostMessageW($tray,6002,[UIntPtr]::Zero,[IntPtr]0x202) | Out-Null
+    Start-Sleep -Milliseconds 700
     Assert-Locked $true
     Tray '刷新全部'
     Assert-Locked $true

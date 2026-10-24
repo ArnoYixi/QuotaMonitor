@@ -1,8 +1,10 @@
 use crate::{
+    login::BrowserLogin,
     model::{Quota, now},
     rpc::{Rpc, RpcError},
-    runtime::BackendCommand,
+    runtime::Backend,
     store::{self, PendingReset},
+    token::{self, TokenClient},
 };
 use serde_json::json;
 use std::{
@@ -22,6 +24,7 @@ pub enum Status {
     LoggedOut,
     Ready,
     WaitingLogin,
+    Syncing,
     Paused,
     Resetting,
     Error,
@@ -55,11 +58,14 @@ impl ViewState {
         }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Command {
     Refresh,
     Login { device: bool },
     CancelLogin,
+    UseToken(String),
+    SwitchCodex(PathBuf),
+    SetSharedCodex(Option<PathBuf>),
     Reset,
     Logout,
     Pause(bool),
@@ -71,6 +77,10 @@ pub enum Event {
     State(ViewState),
     OpenLogin(String),
     Removed(String),
+    CodexSwitched {
+        id: String,
+        result: Result<PathBuf, String>,
+    },
 }
 pub struct Worker {
     pub tx: Sender<Command>,
@@ -82,7 +92,7 @@ impl Worker {
     pub fn start(
         id: String,
         home: PathBuf,
-        backend: BackendCommand,
+        backend: impl Into<Backend>,
         interval: u64,
         paused: bool,
         ephemeral: bool,
@@ -92,6 +102,7 @@ impl Worker {
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let c = cancel.clone();
+        let backend = backend.into();
         let join = thread::spawn(move || {
             Runner {
                 id: id.clone(),
@@ -105,6 +116,9 @@ impl Worker {
                 cancel: c,
                 rx,
                 rpc: None,
+                token_client: None,
+                browser_login: None,
+                shared_auth: None,
                 state: ViewState::new(id, None),
                 failures: 0,
                 next_poll: Instant::now(),
@@ -136,7 +150,7 @@ impl Drop for Worker {
 struct Runner {
     id: String,
     home: PathBuf,
-    backend: BackendCommand,
+    backend: Backend,
     interval: u64,
     paused: bool,
     ephemeral: bool,
@@ -145,6 +159,9 @@ struct Runner {
     cancel: Arc<AtomicBool>,
     rx: Receiver<Command>,
     rpc: Option<Rpc>,
+    token_client: Option<TokenClient>,
+    browser_login: Option<BrowserLogin>,
+    shared_auth: Option<PathBuf>,
     state: ViewState,
     failures: u32,
     next_poll: Instant,
@@ -164,8 +181,11 @@ impl Runner {
     }
     fn connect(&mut self) -> Result<(), RpcError> {
         if self.rpc.is_none() {
+            let Backend::AppServer(backend) = &self.backend else {
+                return Ok(());
+            };
             self.rpc = Some(Rpc::spawn(
-                &self.backend,
+                backend,
                 &self.home,
                 self.ephemeral,
                 self.cancel.clone(),
@@ -173,11 +193,58 @@ impl Runner {
         }
         Ok(())
     }
+    fn switch_codex(&mut self, destination: PathBuf) {
+        let result = (|| -> Result<PathBuf, String> {
+            if !self.backend.uses_tokens() {
+                return Err("请使用网页登录保存完整账号后再切换 Codex".into());
+            }
+            if self.token_client.is_none() {
+                self.token_client = Some(TokenClient::new(&self.home)?);
+                self.token_client
+                    .as_mut()
+                    .unwrap()
+                    .set_shared_auth(self.shared_auth.clone());
+            }
+            self.token_client
+                .as_mut()
+                .unwrap()
+                .replace_codex_auth(&destination)?;
+            self.shared_auth = Some(destination.clone());
+            Ok(destination)
+        })();
+        let _ = self.events.send(Event::CodexSwitched {
+            id: self.id.clone(),
+            result,
+        });
+        (self.wake)();
+    }
     fn request(
         &mut self,
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, RpcError> {
+        if self.backend.uses_tokens() {
+            if self.token_client.is_none() {
+                self.token_client = Some(TokenClient::new(&self.home).map_err(|s| logical(&s))?);
+                self.token_client
+                    .as_mut()
+                    .unwrap()
+                    .set_shared_auth(self.shared_auth.clone());
+            }
+            let client = self.token_client.as_mut().unwrap();
+            return match method {
+                "account/read" => client.account().map_err(|s| logical(&s)),
+                "account/rateLimits/read" => client.quota(),
+                "account/logout" => {
+                    token::forget(&self.home).map_err(|s| logical(&s))?;
+                    self.token_client = None;
+                    Ok(json!({}))
+                }
+                _ => Err(logical(
+                    "当前使用已有 token 查询额度，请在账号详情导入 token",
+                )),
+            };
+        }
         self.connect()?;
         self.rpc
             .as_mut()
@@ -210,7 +277,14 @@ impl Runner {
             self.state.email = None;
             self.state.plan = None;
             if self.login_id.is_none() {
-                self.set_status(Status::LoggedOut, "请登录 OpenAI 账号");
+                self.set_status(
+                    Status::LoggedOut,
+                    if self.backend.uses_tokens() {
+                        "请点击浏览器登录，登录后自动查询额度"
+                    } else {
+                        "请登录 OpenAI 账号"
+                    },
+                );
             }
             self.next_poll = Instant::now() + Duration::from_secs(600);
             return Ok(());
@@ -223,6 +297,14 @@ impl Runner {
         self.state.email = a["account"]["email"].as_str().map(String::from);
         self.state.plan = a["account"]["planType"].as_str().map(String::from);
         let response = self.request("account/rateLimits/read", json!({}))?;
+        if self.backend.uses_tokens() {
+            if let Some(email) = response.get("email").and_then(serde_json::Value::as_str) {
+                self.state.email = Some(email.into());
+            }
+            if let Some(plan) = response.get("planType").and_then(serde_json::Value::as_str) {
+                self.state.plan = Some(plan.into());
+            }
+        }
         let quota = Quota::parse(response, now()).map_err(|s| logical(&s))?;
         if let (Some(bound), Some(current)) = (&self.bound_account, &quota.account_id) {
             if bound != current {
@@ -253,6 +335,9 @@ impl Runner {
         Ok(())
     }
     fn reset(&mut self) -> Result<(), RpcError> {
+        if self.backend.uses_tokens() {
+            return Err(logical("token 模式仅查询额度，请在官方客户端使用重置卡"));
+        }
         if self.paused {
             return Err(logical("请先恢复此账号的监测"));
         }
@@ -317,6 +402,26 @@ impl Runner {
         Ok(())
     }
     fn login(&mut self, device: bool) -> Result<(), RpcError> {
+        if self.backend.uses_tokens() {
+            self.browser_login = None;
+            self.login_id = None;
+            self.login_started = None;
+            self.state.login_url = None;
+            let login = BrowserLogin::start().map_err(|s| logical(&s))?;
+            self.login_id = Some(login.id.clone());
+            self.login_started = Some(Instant::now());
+            self.state.login_url = Some(login.url.clone());
+            self.state.user_code = None;
+            let url = login.url.clone();
+            self.browser_login = Some(login);
+            self.set_status(
+                Status::WaitingLogin,
+                "请在官方网页完成登录，完成后自动导入 token 并刷新额度",
+            );
+            let _ = self.events.send(Event::OpenLogin(url));
+            (self.wake)();
+            return Ok(());
+        }
         // Reauthentication must remain possible after an ambiguous redemption.
         // reset() compares the durable accountId before retrying that operation.
         store::load_journal(&self.home).map_err(|s| logical(&s))?;
@@ -342,7 +447,40 @@ impl Runner {
         (self.wake)();
         Ok(())
     }
+    fn import_token(&mut self, raw: String) -> Result<(), RpcError> {
+        if !self.backend.uses_tokens() {
+            return Err(logical("请先在设置中清空官方组件路径，切换到 token 查询"));
+        }
+        token::save_token(&self.home, &raw).map_err(|s| logical(&s))?;
+        self.activate_imported_token()
+    }
+    fn activate_imported_token(&mut self) -> Result<(), RpcError> {
+        self.browser_login = None;
+        self.login_id = None;
+        self.login_started = None;
+        self.state.login_url = None;
+        self.token_client = None;
+        self.bound_account = None;
+        self.state.quota = None;
+        self.state.email = None;
+        self.state.plan = None;
+        self.paused = false;
+        self.set_status(Status::Syncing, "登录已保存，正在查询额度");
+        self.refresh()
+    }
     fn notifications(&mut self) -> Result<(), RpcError> {
+        if let Some(login) = &mut self.browser_login {
+            let result = login.poll(&self.home);
+            if !matches!(&result, Ok(None)) {
+                self.browser_login = None;
+                self.login_id = None;
+                self.login_started = None;
+                self.state.login_url = None;
+                self.state.user_code = None;
+                result.map_err(|s| logical(&s))?;
+                self.activate_imported_token()?;
+            }
+        }
         if let Some(rpc) = &mut self.rpc {
             rpc.drain()?;
         }
@@ -428,9 +566,27 @@ impl Runner {
                     self.paused = false;
                     self.login(device)
                 }
+                Ok(Command::UseToken(raw)) => self.import_token(raw),
+                Ok(Command::SwitchCodex(path)) => {
+                    self.switch_codex(path);
+                    Ok(())
+                }
+                Ok(Command::SetSharedCodex(path)) => {
+                    self.shared_auth = path.clone();
+                    if let Some(client) = &mut self.token_client {
+                        client.set_shared_auth(path);
+                    }
+                    if self.shared_auth.is_some() {
+                        self.next_poll = Instant::now();
+                    }
+                    Ok(())
+                }
                 Ok(Command::CancelLogin) => {
+                    self.browser_login = None;
                     if let Some(id) = self.login_id.take() {
-                        let _ = self.request("account/login/cancel", json!({"loginId":id}));
+                        if !self.backend.uses_tokens() {
+                            let _ = self.request("account/login/cancel", json!({"loginId":id}));
+                        }
                     }
                     self.state.login_url = None;
                     self.state.user_code = None;
@@ -473,8 +629,11 @@ impl Runner {
                     .is_some_and(|t| t.elapsed() > Duration::from_secs(600))
                 {
                     if let Some(id) = self.login_id.take() {
-                        let _ = self.request("account/login/cancel", json!({"loginId":id}));
+                        if !self.backend.uses_tokens() {
+                            let _ = self.request("account/login/cancel", json!({"loginId":id}));
+                        }
                     }
+                    self.browser_login = None;
                     self.login_started = None;
                     self.state.login_url = None;
                     self.state.user_code = None;

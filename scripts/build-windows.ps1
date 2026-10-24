@@ -1,8 +1,6 @@
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
-python scripts/fetch_runtime.py --platform windows
-if ($LASTEXITCODE -ne 0) { throw 'Runtime download failed' }
-$env:QUOTA_BUNDLE_RUNTIME = '1'
+$env:QUOTA_BUNDLE_RUNTIME = '0'
 cargo build --release --locked --target x86_64-pc-windows-msvc
 if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 New-Item -ItemType Directory -Force dist | Out-Null

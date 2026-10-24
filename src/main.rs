@@ -10,7 +10,7 @@ fn main() {
         let result = self_test();
         let report = match &result {
             Ok(()) => {
-                serde_json::json!({"ok":true,"version":env!("CARGO_PKG_VERSION"),"runtime":quotamonitor::runtime::RUNTIME_VERSION,"checks":["bundle_sha256","extraction","child_process","initialize","account_read_logged_out"]})
+                serde_json::json!({"ok":true,"version":env!("CARGO_PKG_VERSION"),"backend":"token","checks":["http_client","account_read_logged_out","no_runtime_extraction"]})
             }
             Err(e) => serde_json::json!({"ok":false,"error":e}),
         };
@@ -26,30 +26,21 @@ fn main() {
     }
 }
 fn self_test() -> Result<(), String> {
-    use quotamonitor::{rpc::Rpc, runtime};
-    use std::sync::{Arc, atomic::AtomicBool};
+    use quotamonitor::{runtime, token::TokenClient};
     let root = std::env::temp_dir().join(format!("quotamonitor-probe-{}", uuid::Uuid::new_v4()));
     let result = (|| {
-        let backend = runtime::resolve(&root, "")?;
-        let mut rpc = Rpc::spawn(
-            &backend,
-            &root.join("account"),
-            true,
-            Arc::new(AtomicBool::new(false)),
-        )
-        .map_err(|e| e.message)?;
-        let account = rpc
-            .request(
-                "account/read",
-                serde_json::json!({"refreshToken":false}),
-                std::time::Duration::from_secs(25),
-            )
-            .map_err(|e| e.message)?;
+        if !runtime::resolve(&root, "")?.uses_tokens() {
+            return Err("默认额度查询不应启动 Codex 组件".into());
+        }
+        let account = TokenClient::new(&root.join("account"))?.account()?;
         if !account
             .get("account")
             .is_some_and(serde_json::Value::is_null)
         {
             return Err("隔离自检目录应没有登录账号".into());
+        }
+        if root.join("runtime").exists() {
+            return Err("token 查询不应解压运行组件".into());
         }
         Ok(())
     })();
@@ -59,16 +50,27 @@ fn self_test() -> Result<(), String> {
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let demo = args.iter().any(|a| a == "--demo");
-    let mut dir = args
+    let requested_dir = args
         .windows(2)
         .find(|w| w[0] == "--data-dir")
-        .map(|w| std::path::PathBuf::from(&w[1]))
-        .unwrap_or_else(store::default_dir);
-    if demo {
-        dir = dir.join("demo");
-    }
-    let lock = store::lock_instance(&dir)?;
+        .map(|w| std::path::PathBuf::from(&w[1]));
+    let (dir, lock) = if demo {
+        let dir = requested_dir
+            .unwrap_or_else(|| std::env::temp_dir().join("QuotaMonitor-preview"))
+            .join("demo");
+        let lock = store::lock_instance(&dir)?;
+        (dir, lock)
+    } else if let Some(dir) = requested_dir {
+        let lock = store::lock_instance(&dir)?;
+        (dir, lock)
+    } else {
+        quotamonitor::migration::open_default()?
+    };
     let mut settings = store::load_settings(&dir)?;
+    if !demo && settings.codex_path.trim().is_empty() {
+        // Hold the instance lock before removing files used by older versions.
+        quotamonitor::cleanup::legacy_data(&dir)?;
+    }
     if let Some(w) = args.windows(2).find(|w| w[0] == "--view") {
         settings.view = w[1].clone();
     }

@@ -27,7 +27,11 @@ cargo test --locked --bin QuotaMonitor desktop::tests::event_loop_unlocks_and_ex
 | `src/desktop.rs` | 桌面事件循环和控制调度 |
 | `src/ui.rs` | 界面、布局和参考图渲染 |
 | `src/platform.rs` | 托盘、鼠标穿透、定位与平台集成 |
-| `src/engine.rs`、`src/rpc.rs` | 后台状态与官方组件通信 |
+| `src/engine.rs`、`src/token.rs` | 后台状态、已有 token 和直接额度查询 |
+| `src/login.rs` | 独立网页登录、PKCE、回调校验与 token 续期 |
+| `src/cleanup.rs` | 升级时清理旧组件与账号缓存，保留凭据 |
+| `src/migration.rs` | 旧保存位置迁移、账号保护与进程锁 |
+| `src/rpc.rs` | 可选的本机 Codex 兼容通信 |
 | `src/model.rs` | 额度、积分和重置卡模型 |
 | `src/store.rs` | 本地设置、兼容目录与操作记录 |
 

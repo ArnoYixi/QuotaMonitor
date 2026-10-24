@@ -1,6 +1,6 @@
 [package]
 name = "quotamonitor"
-version = "0.1.6"
+version = "0.1.11"
 edition = "2024"
 rust-version = "1.88"
 description = "Native desktop quota monitor for multiple Codex accounts"
@@ -19,6 +19,8 @@ eframe = { version = "=0.33.3", default-features = false, features = ["default_f
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots", "system-proxy"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 directories = "6"
@@ -34,8 +36,10 @@ tray-icon = "0.21"
 gtk = "0.18"
 
 [target.'cfg(windows)'.dependencies]
+age = { version = "0.11", default-features = false }
+keyring = { version = "3.6", features = ["windows-native"] }
 winreg = "0.55"
-windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_Security"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_UI_Input_KeyboardAndMouse", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_Security", "Win32_Security_Cryptography"] }
 
 [profile.release]
 opt-level = "s"

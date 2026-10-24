@@ -38,7 +38,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Formatting failed' }
           cargo test --all-targets --locked
           if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
-      - name: Build bundled Windows executable
+      - name: Build token query Windows executable
         shell: pwsh
         run: ./scripts/build-windows.ps1
       - name: Prepare software graphics for desktop regression
@@ -51,7 +51,7 @@ jobs:
           Copy-Item (Join-Path $renderer '*.dll') target/debug/deps/ -Force
           cargo test --locked --bin QuotaMonitor desktop::tests::event_loop_unlocks_and_exits_when_rendering_is_disabled -- --ignored --exact
           if ($LASTEXITCODE -ne 0) { throw 'Desktop regression failed' }
-      - name: Package and verify embedded runtime
+      - name: Package and verify token backend
         shell: pwsh
         run: ./scripts/package-windows.ps1
       - name: Preserve release files

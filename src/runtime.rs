@@ -11,7 +11,28 @@ pub struct BackendCommand {
     pub executable: PathBuf,
     pub prefix: Vec<String>,
 }
-pub fn resolve(dir: &Path, override_path: &str) -> Result<BackendCommand, String> {
+#[derive(Clone, Debug)]
+pub enum Backend {
+    Token,
+    AppServer(BackendCommand),
+}
+impl From<BackendCommand> for Backend {
+    fn from(command: BackendCommand) -> Self {
+        Self::AppServer(command)
+    }
+}
+impl Backend {
+    pub fn uses_tokens(&self) -> bool {
+        matches!(self, Self::Token)
+    }
+}
+pub fn resolve(dir: &Path, override_path: &str) -> Result<Backend, String> {
+    if override_path.trim().is_empty() {
+        return Ok(Backend::Token);
+    }
+    resolve_app_server(dir, override_path).map(Backend::AppServer)
+}
+pub fn resolve_app_server(dir: &Path, override_path: &str) -> Result<BackendCommand, String> {
     if !override_path.trim().is_empty() {
         let p = PathBuf::from(override_path.trim());
         if !p.is_absolute() || !p.is_file() {

@@ -22,13 +22,11 @@ jobs:
         run: |
           cargo +1.99.0 fmt --check
           cargo +1.99.0 test --all-targets --locked
-      - name: Fetch verified runtime
-        run: python scripts/fetch_runtime.py --platform windows
       - name: Compile static CRT executable
         id: compile
         shell: pwsh
         env:
-          QUOTA_BUNDLE_RUNTIME: '1'
+          QUOTA_BUNDLE_RUNTIME: '0'
         run: |
           cargo +1.99.0 build --release --locked --target x86_64-pc-windows-msvc
           New-Item -ItemType Directory -Force dist | Out-Null
@@ -39,13 +37,13 @@ jobs:
           Copy-Item assets/FONT-LICENSE.txt dist/licenses/
           Copy-Item scripts/Demo.bat dist/
           (Get-FileHash dist/QuotaMonitor.exe -Algorithm SHA256).Hash | Out-File dist/SHA256.txt
-      - name: Verify bundled Windows runtime
+      - name: Verify token backend
         shell: pwsh
         run: |
           $report = Join-Path $pwd 'dist/self-test.json'
           $p = Start-Process -FilePath 'dist/QuotaMonitor.exe' -ArgumentList @('--self-test', $report) -WindowStyle Hidden -PassThru
-          if (-not $p.WaitForExit(60000)) { $p.Kill(); throw 'Runtime self-test timed out' }
-          if ($p.ExitCode -ne 0) { Get-Content $report -ErrorAction SilentlyContinue; throw 'Runtime self-test failed' }
+          if (-not $p.WaitForExit(60000)) { $p.Kill(); throw 'Token backend self-test timed out' }
+          if ($p.ExitCode -ne 0) { Get-Content $report -ErrorAction SilentlyContinue; throw 'Token backend self-test failed' }
           Get-Content $report
       - name: Prepare software graphics for headless CI
         shell: pwsh
@@ -87,11 +85,9 @@ jobs:
           cache-on-failure: true
       - name: Test
         run: cargo +1.99.0 test --all-targets --locked
-      - name: Fetch verified runtime
-        run: python3 scripts/fetch_runtime.py --platform linux
       - name: Build
         env:
-          QUOTA_BUNDLE_RUNTIME: '1'
+          QUOTA_BUNDLE_RUNTIME: '0'
         run: cargo +1.99.0 build --release --locked
       - uses: actions/upload-artifact@v4
         with:

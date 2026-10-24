@@ -190,7 +190,9 @@ try {
     TrayMenu 1
     TrayMenu 3
     if (-not [DesktopProbe]::IsWindowVisible($hwnd)) { throw 'Tray Settings failed while hidden' }
-    TrayMenu 0
+    # The visible window only offers Hide; a tray left-click returns to Monitor.
+    [DesktopProbe]::PostMessageW($script:tray,6002,[UIntPtr]::Zero,[IntPtr]0x202) | Out-Null
+    Start-Sleep -Milliseconds 1400
     $monitor=Rect
     if (($monitor.B-$monitor.T) -gt 300*$scale -or ($monitor.R-$monitor.L) -gt 300*$scale -or [Math]::Abs($monitor.T-$side.T) -gt 5) { throw 'Tray Show did not return to monitor' }
     TrayMenu 4
